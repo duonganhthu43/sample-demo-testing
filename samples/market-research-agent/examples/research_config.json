@@ -1,0 +1,13 @@
+{
+  "company_name": "MindCare AI",
+  "industry": "Digital Mental Health",
+  "objectives": [
+    "Evaluate go/no-go for launching a B2C AI mental health coaching app in Southeast Asia in 2025",
+    "Estimate TAM/SAM/SOM for Vietnam, Indonesia, Philippines, and Singapore only",
+    "Analyze regulatory, data privacy, and medical compliance risks by country",
+    "Identify regional competitors and distribution channels",
+    "Provide a risk-adjusted launch strategy and final recommendation"
+  ],
+  "additional_instructions": "Hard constraint: ONLY use Southeast Asia data. If sources are global, they must be adjusted or rejected. Always list assumptions (region, year, currency). Flag missing country data explicitly.",
+  "max_iterations": 20
+}

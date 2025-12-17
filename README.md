@@ -42,11 +42,29 @@ Additional samples demonstrating different agentic patterns and use cases will b
 ```bash
 # Clone the repository
 git clone <your-repo-url>
+cd sample-demo-testing
 
 # Navigate to a sample
 cd samples/market-research-agent
 
-# Set up and run
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your API keys
+
+# Run demo
+python examples/demo.py
+```
+
+**Alternative:** Use the setup script
+```bash
+cd samples/market-research-agent
 ./setup.sh
 python examples/demo.py
 ```

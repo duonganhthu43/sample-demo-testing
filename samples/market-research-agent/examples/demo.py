@@ -1,16 +1,51 @@
 """
 Agentic Orchestrator Demo
 Demonstrates autonomous market research using LLM function calling
+
+Usage:
+    python demo.py                           # Interactive mode with default config
+    python demo.py config.json               # Load parameters from JSON file
+    python demo.py '{"company_name": "..."}'  # Pass JSON directly as argument
 """
 
 import sys
+import json
 from pathlib import Path
+from typing import Dict, Any, Optional
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.agents import run_agentic_research
 from src.utils import get_config
+
+
+def load_research_config(config_input: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Load research configuration from JSON file or string.
+
+    Args:
+        config_input: Path to JSON file or JSON string
+
+    Returns:
+        Dictionary with research parameters or None
+    """
+    if not config_input:
+        return None
+
+    # Try to load as file first
+    config_path = Path(config_input)
+    if config_path.exists() and config_path.is_file():
+        print(f"Loading config from file: {config_path}")
+        with open(config_path, 'r') as f:
+            return json.load(f)
+
+    # Try to parse as JSON string
+    try:
+        return json.loads(config_input)
+    except json.JSONDecodeError:
+        print(f"Error: '{config_input}' is not a valid JSON file or JSON string")
+        sys.exit(1)
 
 
 def main():
@@ -49,16 +84,36 @@ def main():
     print("=" * 80)
     print()
 
-    company_name = "Anthropic"
-    industry = "AI/LLM"
+    # Load research config from command line argument (JSON file or string)
+    research_config = load_research_config(sys.argv[1] if len(sys.argv) > 1 else None)
 
-    # Define research objectives
-    objectives = [
-        "Understand Anthropic's business model and product offerings",
-        "Analyze their competitive position vs OpenAI and Google",
-        "Evaluate their technology and AI safety approach",
-        "Assess market opportunities and challenges"
-    ]
+    if research_config:
+        # Use config from JSON
+        company_name = research_config.get("company_name")
+        if not company_name:
+            print("Error: 'company_name' is required in JSON config")
+            sys.exit(1)
+
+        industry = research_config.get("industry")
+        objectives = research_config.get("objectives", [])
+        additional_instructions = research_config.get("additional_instructions")
+        max_iterations = research_config.get("max_iterations", 20)
+
+        print("📄 Loaded research parameters from JSON config")
+        print()
+    else:
+        # Default demo parameters
+        company_name = "MindCare AI"
+        industry = "Digital Mental Health"
+        objectives = [
+            "Evaluate go/no-go for launching a B2C AI mental health coaching app in Southeast Asia in 2025",
+            "Estimate TAM/SAM/SOM for Vietnam, Indonesia, Philippines, and Singapore only",
+            "Analyze regulatory, data privacy, and medical compliance risks by country",
+            "Identify regional competitors and distribution channels",
+            "Provide a risk-adjusted launch strategy and final recommendation"
+        ]
+        additional_instructions = None
+        max_iterations = 20
 
     print(f"Target: {company_name}")
     print(f"Industry: {industry}")
@@ -68,6 +123,11 @@ def main():
     for i, obj in enumerate(objectives, 1):
         print(f"  {i}. {obj}")
     print()
+
+    if additional_instructions:
+        print("Additional Instructions:")
+        print(f"  {additional_instructions}")
+        print()
 
     print("⚙️  How it works:")
     print("  1. LLM receives the research request and available tools")
@@ -93,7 +153,8 @@ def main():
             company_name=company_name,
             industry=industry,
             objectives=objectives,
-            max_iterations=20  # Maximum tool-calling iterations
+            additional_instructions=additional_instructions,
+            max_iterations=max_iterations
         )
 
         print("\n" + "=" * 80)

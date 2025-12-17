@@ -1,7 +1,7 @@
 """
-Research Agent
+Research Agent - FLATTENED (Deterministic Execution)
 Responsible for gathering information from various sources
-Uses agentic architecture where LLM decides which research tools to invoke
+NO internal agentic loop - only deterministic execution for speed
 """
 
 import time
@@ -11,10 +11,7 @@ from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..utils.config import get_config
-from ..utils.prompts import RESEARCH_AGENT_SYSTEM, get_research_prompt
 from ..tools import WebSearchTool, DataExtractor
-from .research_tools import RESEARCH_TOOL_DEFINITIONS, ResearchToolExecutor
-
 
 
 @dataclass
@@ -45,26 +42,23 @@ class ResearchResult:
 class ResearchAgent:
     """
     Agent specialized in gathering and synthesizing research
+    FLATTENED: No internal agentic loop - deterministic execution
     """
 
-    def __init__(self, config: Optional[Any] = None, max_iterations: int = 10):
+    def __init__(self, config: Optional[Any] = None):
         self.config = config or get_config()
         self.llm_client = self.config.get_llm_client(label="research_agent")
         self.llm_params = self.config.get_llm_params()
-        self.max_iterations = max_iterations
 
         # Tools
         self.search_tool = WebSearchTool()
         self.data_extractor = DataExtractor()
 
-        # Tool executor for agentic loop
-        self.tool_executor = ResearchToolExecutor(self.search_tool, self.data_extractor)
-
-        print(f"ResearchAgent initialized (agentic mode, max_iterations: {max_iterations})")
+        print(f"ResearchAgent initialized (deterministic mode - FAST)")
 
     def research_company(self, company_name: str, depth: str = "standard") -> ResearchResult:
         """
-        Research a company comprehensively using agentic approach
+        Research a company comprehensively (DETERMINISTIC)
 
         Args:
             company_name: Name of the company to research
@@ -74,45 +68,71 @@ class ResearchAgent:
             ResearchResult with company information
         """
         start_time = time.time()
-        print(f"\nStarting: ResearchAgent - Researching company: {company_name} (depth: {depth})")
+        print(f"\n🔍 ResearchAgent - Company: {company_name} (depth: {depth})")
 
-        # Clear previous context
-        self.tool_executor.clear_context()
+        # Determine search/extract count based on depth
+        search_counts = {"quick": 2, "standard": 3, "deep": 5}
+        extract_counts = {"quick": 2, "standard": 4, "deep": 6}
 
-        # Build research prompt
-        prompt = f"""Research the company: {company_name}
+        num_searches = search_counts.get(depth, 3)
+        num_extracts = extract_counts.get(depth, 4)
 
-You have access to research tools via function calling. Your goal is to gather comprehensive information about this company.
+        # Execute searches
+        all_results = []
+        all_urls = []
 
-Recommended approach:
-1. Search for company information (overview, products, business model)
-2. Extract content from relevant URLs
-3. Extract structured company data (founded, headquarters, employees, revenue)
-4. Search for additional specific information if needed
+        search_queries = [
+            f"{company_name} company overview products business model",
+            f"{company_name} headquarters employees revenue funding",
+            f"{company_name} technology innovation competitive advantage",
+            f"{company_name} market position customers growth",
+            f"{company_name} recent news developments strategy"
+        ][:num_searches]
 
-Depth level: {depth}
-- quick: 2-3 searches, extract 1-2 URLs
-- standard: 3-4 searches, extract 3-5 URLs
-- deep: 5+ searches, extract 5+ URLs, gather detailed metrics
+        print(f"  → Executing {num_searches} web searches...")
+        for query in search_queries:
+            results = self.search_tool.search(query, num_results=3)
+            all_results.extend([r.to_dict() for r in results])
+            all_urls.extend([r.url for r in results if r.url])
 
-When you have sufficient information, provide a final summary of your findings."""
+        # Extract from top URLs
+        unique_urls = list(dict.fromkeys(all_urls))[:num_extracts]
+        extracted_content = []
 
-        # Run agentic loop
-        result_data = self._run_agentic_research(
+        if unique_urls:
+            print(f"  → Extracting from {len(unique_urls)} URLs...")
+            for url in unique_urls:
+                content = self.data_extractor.extract_from_url(url)
+                if content:
+                    # content is already a dict with url, title, description, text
+                    extracted_content.append(content)
+
+        # Synthesize with ONE LLM call
+        print(f"  → Synthesizing findings...")
+        synthesis = self._synthesize_research(
             topic=company_name,
             research_type="company",
-            prompt=prompt,
-            depth=depth
+            search_results=all_results,
+            extracted_content=extracted_content
         )
 
         duration = time.time() - start_time
-        print(f"Complete: ResearchAgent - {duration:.2f}s\n")
+        print(f"✅ ResearchAgent complete - {duration:.2f}s ({num_searches} searches, {len(extracted_content)} extracts, 1 LLM call)\n")
 
-        return result_data
+        return ResearchResult(
+            topic=company_name,
+            research_type="company",
+            summary=synthesis.get("summary", ""),
+            findings=synthesis.get("findings", []),
+            sources=unique_urls,
+            confidence=synthesis.get("confidence", 0.7),
+            timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+            metadata={"depth": depth, "num_searches": num_searches, "num_extracts": len(extracted_content)}
+        )
 
     def research_market(self, market_name: str, depth: str = "standard") -> ResearchResult:
         """
-        Research a market or industry using agentic approach
+        Research a market or industry (DETERMINISTIC)
 
         Args:
             market_name: Name of the market/industry
@@ -122,46 +142,71 @@ When you have sufficient information, provide a final summary of your findings."
             ResearchResult with market information
         """
         start_time = time.time()
-        print(f"\nStarting: ResearchAgent - Researching market: {market_name} (depth: {depth})")
+        print(f"\n🔍 ResearchAgent - Market: {market_name} (depth: {depth})")
 
-        # Clear previous context
-        self.tool_executor.clear_context()
+        # Determine counts based on depth
+        search_counts = {"quick": 2, "standard": 3, "deep": 5}
+        extract_counts = {"quick": 2, "standard": 4, "deep": 6}
 
-        # Build research prompt
-        prompt = f"""Research the market/industry: {market_name}
+        num_searches = search_counts.get(depth, 3)
+        num_extracts = extract_counts.get(depth, 4)
 
-You have access to research tools via function calling. Your goal is to gather comprehensive market intelligence.
+        # Execute searches
+        all_results = []
+        all_urls = []
 
-Recommended approach:
-1. Search for market size and growth data
-2. Search for industry trends and dynamics
-3. Search for market leaders and key players
-4. Extract content from relevant sources
-5. Extract key metrics (market size, growth rate, etc.)
+        search_queries = [
+            f"{market_name} market size growth rate forecast",
+            f"{market_name} industry trends key drivers",
+            f"{market_name} market leaders competitive landscape",
+            f"{market_name} market segments opportunities",
+            f"{market_name} industry analysis market dynamics"
+        ][:num_searches]
 
-Depth level: {depth}
-- quick: Focus on market size and top trends
-- standard: Include competitive landscape and growth drivers
-- deep: Comprehensive analysis including segments, trends, and forecasts
+        print(f"  → Executing {num_searches} web searches...")
+        for query in search_queries:
+            results = self.search_tool.search(query, num_results=3)
+            all_results.extend([r.to_dict() for r in results])
+            all_urls.extend([r.url for r in results if r.url])
 
-When you have sufficient market intelligence, provide a final summary."""
+        # Extract from top URLs
+        unique_urls = list(dict.fromkeys(all_urls))[:num_extracts]
+        extracted_content = []
 
-        # Run agentic loop
-        result_data = self._run_agentic_research(
+        if unique_urls:
+            print(f"  → Extracting from {len(unique_urls)} URLs...")
+            for url in unique_urls:
+                content = self.data_extractor.extract_from_url(url)
+                if content:
+                    # content is already a dict with url, title, description, text
+                    extracted_content.append(content)
+
+        # Synthesize with ONE LLM call
+        print(f"  → Synthesizing findings...")
+        synthesis = self._synthesize_research(
             topic=market_name,
             research_type="market",
-            prompt=prompt,
-            depth=depth
+            search_results=all_results,
+            extracted_content=extracted_content
         )
 
         duration = time.time() - start_time
-        print(f"Complete: ResearchAgent - {duration:.2f}s\n")
+        print(f"✅ ResearchAgent complete - {duration:.2f}s ({num_searches} searches, {len(extracted_content)} extracts, 1 LLM call)\n")
 
-        return result_data
+        return ResearchResult(
+            topic=market_name,
+            research_type="market",
+            summary=synthesis.get("summary", ""),
+            findings=synthesis.get("findings", []),
+            sources=unique_urls,
+            confidence=synthesis.get("confidence", 0.7),
+            timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+            metadata={"depth": depth, "num_searches": num_searches, "num_extracts": len(extracted_content)}
+        )
 
     def research_competitors(self, company_name: str, industry: str, depth: str = "standard") -> ResearchResult:
         """
-        Research competitors in an industry using agentic approach
+        Research competitors in an industry (DETERMINISTIC)
 
         Args:
             company_name: Reference company
@@ -172,233 +217,132 @@ When you have sufficient market intelligence, provide a final summary."""
             ResearchResult with competitor information
         """
         start_time = time.time()
-        print(f"\nStarting: ResearchAgent - Researching competitors for {company_name} (depth: {depth})")
+        print(f"\n🔍 ResearchAgent - Competitors: {company_name} in {industry} (depth: {depth})")
 
-        # Clear previous context
-        self.tool_executor.clear_context()
+        # Determine counts based on depth
+        search_counts = {"quick": 2, "standard": 3, "deep": 4}
+        extract_counts = {"quick": 2, "standard": 3, "deep": 5}
 
-        # Build research prompt
-        prompt = f"""Research competitors for: {company_name} in the {industry} industry
+        num_searches = search_counts.get(depth, 3)
+        num_extracts = extract_counts.get(depth, 3)
 
-You have access to research tools via function calling. Your goal is to identify and analyze competitors.
+        # Execute searches
+        all_results = []
+        all_urls = []
 
-Recommended approach:
-1. Search for direct competitors of {company_name}
-2. Search for {industry} market leaders and companies
-3. Search for alternatives to {company_name}
-4. Extract content from competitor websites and analysis
-5. Extract key metrics and competitive positioning data
+        search_queries = [
+            f"{company_name} competitors {industry}",
+            f"{industry} market leaders competitive landscape",
+            f"{company_name} vs competitors comparison",
+            f"{industry} top companies market share"
+        ][:num_searches]
 
-Depth level: {depth}
-- quick: Identify top 3-5 competitors
-- standard: Analyze 5-10 competitors with key differentiators
-- deep: Comprehensive competitive landscape with detailed comparisons
+        print(f"  → Executing {num_searches} web searches...")
+        for query in search_queries:
+            results = self.search_tool.search(query, num_results=3)
+            all_results.extend([r.to_dict() for r in results])
+            all_urls.extend([r.url for r in results if r.url])
 
-When you have sufficient competitor intelligence, provide a final summary."""
+        # Extract from top URLs
+        unique_urls = list(dict.fromkeys(all_urls))[:num_extracts]
+        extracted_content = []
 
-        # Run agentic loop
-        result_data = self._run_agentic_research(
+        if unique_urls:
+            print(f"  → Extracting from {len(unique_urls)} URLs...")
+            for url in unique_urls:
+                content = self.data_extractor.extract_from_url(url)
+                if content:
+                    # content is already a dict with url, title, description, text
+                    extracted_content.append(content)
+
+        # Synthesize with ONE LLM call
+        print(f"  → Synthesizing findings...")
+        synthesis = self._synthesize_research(
             topic=f"Competitors of {company_name}",
             research_type="competitors",
-            prompt=prompt,
-            depth=depth,
-            metadata={"company": company_name, "industry": industry}
+            search_results=all_results,
+            extracted_content=extracted_content
         )
 
         duration = time.time() - start_time
-        print(f"Complete: ResearchAgent - {duration:.2f}s\n")
+        print(f"✅ ResearchAgent complete - {duration:.2f}s ({num_searches} searches, {len(extracted_content)} extracts, 1 LLM call)\n")
 
-        return result_data
+        return ResearchResult(
+            topic=f"Competitors of {company_name}",
+            research_type="competitors",
+            summary=synthesis.get("summary", ""),
+            findings=synthesis.get("findings", []),
+            sources=unique_urls,
+            confidence=synthesis.get("confidence", 0.7),
+            timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+            metadata={"company": company_name, "industry": industry, "depth": depth,
+                     "num_searches": num_searches, "num_extracts": len(extracted_content)}
+        )
 
-    def _run_agentic_research(
+    def _synthesize_research(
         self,
         topic: str,
         research_type: str,
-        prompt: str,
-        depth: str = "standard",
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> ResearchResult:
+        search_results: List[Dict[str, Any]],
+        extracted_content: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
         """
-        Run agentic research loop where LLM decides which tools to call
+        Synthesize research findings with ONE LLM call (no tool calling loop)
 
         Args:
             topic: Research topic
-            research_type: Type of research (company, market, competitors)
-            prompt: Initial research prompt for LLM
-            depth: Research depth
-            metadata: Additional metadata
+            research_type: Type of research
+            search_results: Search results
+            extracted_content: Extracted content from URLs
 
         Returns:
-            ResearchResult with accumulated findings
+            Synthesized findings as dict
         """
-        # Initialize conversation
-        messages = [
-            {
-                "role": "system",
-                "content": """You are an expert research agent with access to web search and data extraction tools.
+        # Build context from gathered data
+        context = {
+            "topic": topic,
+            "research_type": research_type,
+            "search_results": search_results[:10],  # Limit to top 10
+            "extracted_content": extracted_content[:5]  # Limit to top 5
+        }
 
-Your role is to autonomously gather information by strategically using the available research tools.
+        prompt = f"""Synthesize the following research on "{topic}" (type: {research_type}).
 
-STRATEGIC APPROACH:
-1. Start with web searches to find relevant sources
-2. Extract content from promising URLs to get detailed information
-3. Use extraction tools to parse structured data when available
-4. Gather sufficient information before concluding
+Search Results:
+{json.dumps(search_results[:10], indent=2)}
 
-DECISION-MAKING:
-- Be strategic - each tool call should add value
-- Extract content from only the most relevant sources
-- When you have sufficient information, provide a comprehensive summary
-- The tools and their descriptions are provided via function calling
+Extracted Content:
+{json.dumps(extracted_content[:5], indent=2)}
 
-Remember: Your summary will be used to generate research reports, so be thorough and accurate."""
-            },
-            {
-                "role": "user",
-                "content": prompt
+Provide a comprehensive synthesis in JSON format:
+{{
+  "summary": "A comprehensive 3-5 sentence summary of key findings",
+  "findings": [
+    {{"category": "Overview", "finding": "specific finding", "evidence": "supporting evidence"}},
+    {{"category": "Key Facts", "finding": "specific finding", "evidence": "supporting evidence"}},
+    ...
+  ],
+  "confidence": 0.8  // 0.0-1.0 based on data quality
+}}
+
+Focus on actionable insights and concrete facts. Be specific."""
+
+        try:
+            response = self.llm_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": "You are a research synthesis expert. Analyze data and provide structured insights."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"},
+                **self.llm_params
+            )
+
+            result = json.loads(response.choices[0].message.content)
+            return result
+        except Exception as e:
+            print(f"⚠️ Synthesis failed: {e}")
+            return {
+                "summary": f"Research completed on {topic}. Data gathered but synthesis encountered an error.",
+                "findings": [],
+                "confidence": 0.5
             }
-        ]
-
-        # Track tool calls
-        tool_calls_made = []
-        sources_gathered = set()
-
-        # Agentic loop
-        iteration = 0
-        final_summary = ""
-        findings = []
-
-        while iteration < self.max_iterations:
-            iteration += 1
-
-            try:
-                # Call LLM with research tools
-                response = self.llm_client.chat.completions.create(
-                    messages=messages,
-                    tools=RESEARCH_TOOL_DEFINITIONS,
-                    tool_choice="auto",
-                    **self.llm_params
-                )
-
-                assistant_message = response.choices[0].message
-
-                # Add assistant message to conversation
-                messages.append({
-                    "role": "assistant",
-                    "content": assistant_message.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": tc.type,
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                            }
-                        }
-                        for tc in (assistant_message.tool_calls or [])
-                    ] if assistant_message.tool_calls else None
-                })
-
-                # Check if LLM wants to call tools
-                if assistant_message.tool_calls:
-                    num_tools = len(assistant_message.tool_calls)
-                    print(f"  🤖 LLM requested {num_tools} tool(s) in iteration {iteration}")
-
-                    # Execute tool calls in parallel
-                    def execute_single_tool(tool_call):
-                        """Execute a single tool call"""
-                        function_name = tool_call.function.name
-                        function_args = json.loads(tool_call.function.arguments)
-
-                        # Execute tool
-                        tool_result = self.tool_executor.execute_tool(
-                            tool_name=function_name,
-                            arguments=function_args
-                        )
-
-                        return {
-                            "tool_call_id": tool_call.id,
-                            "function_name": function_name,
-                            "function_args": function_args,
-                            "result": tool_result
-                        }
-
-                    # Execute in parallel if multiple tools
-                    tool_results = []
-                    if num_tools > 1:
-                        with ThreadPoolExecutor(max_workers=num_tools) as executor:
-                            future_to_tool = {
-                                executor.submit(execute_single_tool, tc): tc
-                                for tc in assistant_message.tool_calls
-                            }
-
-                            for future in as_completed(future_to_tool):
-                                try:
-                                    tool_data = future.result()
-                                    tool_results.append(tool_data)
-                                    print(f"     ✅ {tool_data['function_name']}")
-                                except Exception as e:
-                                    print(f"     ❌ Error: {str(e)}")
-                    else:
-                        # Single tool
-                        for tc in assistant_message.tool_calls:
-                            tool_data = execute_single_tool(tc)
-                            tool_results.append(tool_data)
-                            print(f"     ✅ {tool_data['function_name']}")
-
-                    # Add tool results to conversation and track
-                    for tool_data in tool_results:
-                        tool_calls_made.append(tool_data["function_name"])
-
-                        # Track sources
-                        if "url" in tool_data["function_args"]:
-                            sources_gathered.add(tool_data["function_args"]["url"])
-                        if "results" in tool_data["result"]:
-                            for r in tool_data["result"]["results"]:
-                                sources_gathered.add(r["url"])
-
-                        # Add to conversation
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_data["tool_call_id"],
-                            "name": tool_data["function_name"],
-                            "content": json.dumps(tool_data["result"])
-                        })
-
-                else:
-                    # No more tool calls - LLM is done
-                    print(f"  ✅ Research complete after {iteration} iteration(s)")
-                    if assistant_message.content:
-                        final_summary = assistant_message.content
-                    break
-
-            except Exception as e:
-                print(f"  ❌ Error in iteration {iteration}: {str(e)}")
-                break
-
-        # Build result from accumulated context
-        context = self.tool_executor.get_context()
-
-        # Extract findings from context
-        for item in context.get("structured_data", []):
-            findings.append(item)
-
-        # Create result
-        result = ResearchResult(
-            topic=topic,
-            research_type=research_type,
-            summary=final_summary or "Research completed",
-            findings=findings,
-            sources=list(sources_gathered),
-            confidence=0.8 if len(sources_gathered) >= 3 else 0.6,
-            timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
-            metadata={
-                "depth": depth,
-                "iterations": iteration,
-                "tool_calls": tool_calls_made,
-                "num_sources": len(sources_gathered),
-                **(metadata or {})
-            }
-        )
-
-        return result
