@@ -362,7 +362,7 @@ The LLM cannot skip iterations because it needs results to make informed decisio
 | `AgenticOrchestrator` | ✅ Yes | Main decision-making loop |
 | `ResearchAgent` | ✅ Yes | Tavily API + LLM for info extraction |
 | `AnalysisAgent` | ✅ Yes | Intelligent feasibility, cost, schedule analysis |
-| `SpecializedAgents` | ❌ No | Tavily API + calculations |
+| `SpecializedAgents` | ✅ Yes | Tavily API + LLM for budget, weather, safety, transport |
 | `ItineraryAgent` | ✅ Yes | Generates intelligent day-by-day schedules |
 | `PresentationAgent` | ✅ Yes | Formats output as professional markdown |
 
@@ -377,6 +377,14 @@ Uses LLM for intelligent analysis:
 - **Feasibility Analysis**: Evaluates if itinerary is realistic based on time, logistics, budget
 - **Cost Breakdown**: Calculates costs with destination-specific estimates for food/transport
 - **Schedule Optimization**: Groups activities by location, optimizes travel time
+
+### SpecializedAgents
+All specialized agents use Tavily API for real-time data + LLM for intelligent extraction:
+
+- **BudgetAgent**: Analyzes costs and provides destination-specific optimization recommendations
+- **WeatherAgent**: Generates intelligent weather advisories and packing suggestions
+- **SafetyAgent**: Extracts safety tips, emergency contacts, scam warnings, health advisories
+- **TransportAgent**: Analyzes local transport options, tourist passes, airport transfers
 
 ### ItineraryAgent
 Uses LLM to generate intelligent itineraries with:
