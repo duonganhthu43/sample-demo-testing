@@ -4,10 +4,11 @@ Searches for attractions and activities using Tavily API
 """
 
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 
 from ..utils.config import get_config
+from .image_utils import download_and_encode_base64, create_placeholder_svg
 
 
 @dataclass
@@ -23,6 +24,8 @@ class ActivityOption:
     best_time: str
     tips: List[str]
     source_url: Optional[str] = None
+    image_url: Optional[str] = None
+    image_base64: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -35,7 +38,9 @@ class ActivityOption:
             "rating": self.rating,
             "best_time": self.best_time,
             "tips": self.tips,
-            "source_url": self.source_url
+            "source_url": self.source_url,
+            "image_url": self.image_url,
+            "image_base64": self.image_base64
         }
 
 
@@ -122,6 +127,7 @@ class ActivitySearchTool:
             client = TavilyClient(api_key=self.config.search.tavily_api_key)
             activities = []
             seen_names = set()
+            collected_images = []  # Collect images from all queries
 
             # Build search queries
             queries = [
@@ -146,8 +152,17 @@ class ActivitySearchTool:
                     response = client.search(
                         query=query,
                         max_results=5,
-                        search_depth="basic"
+                        search_depth="basic",
+                        include_images=True  # Enable image fetching
                     )
+
+                    # Collect images from the response
+                    images = response.get("images", [])
+                    for img in images:
+                        if isinstance(img, str):
+                            collected_images.append(img)
+                        elif isinstance(img, dict) and img.get("url"):
+                            collected_images.append(img["url"])
 
                     for result in response.get("results", []):
                         activity = self._parse_tavily_result(result, destination)
@@ -159,12 +174,42 @@ class ActivitySearchTool:
                     print(f"  Query failed: {str(e)}")
                     continue
 
-            print(f"Found {len(activities)} activities via Tavily")
+            # Assign images to activities
+            self._assign_images_to_activities(activities, collected_images)
+
+            print(f"Found {len(activities)} activities via Tavily (with {len(collected_images)} images)")
             return activities if activities else self._generate_fallback_activities(destination)
 
         except Exception as e:
             print(f"Tavily activity search failed: {str(e)}")
             return self._generate_fallback_activities(destination)
+
+    def _assign_images_to_activities(
+        self,
+        activities: List[ActivityOption],
+        image_urls: List[str]
+    ) -> None:
+        """Assign and encode images to activities"""
+        if not image_urls:
+            # Use placeholders if no images available
+            for activity in activities:
+                activity.image_base64 = create_placeholder_svg(activity.name)
+            return
+
+        # Distribute images to activities (round-robin if fewer images than activities)
+        for i, activity in enumerate(activities):
+            if i < len(image_urls):
+                image_url = image_urls[i]
+                activity.image_url = image_url
+                print(f"  Downloading image for {activity.name}...")
+                activity.image_base64 = download_and_encode_base64(image_url)
+
+                # Use placeholder if download failed
+                if not activity.image_base64:
+                    activity.image_base64 = create_placeholder_svg(activity.name)
+            else:
+                # No more images, use placeholder
+                activity.image_base64 = create_placeholder_svg(activity.name)
 
     def _parse_tavily_result(
         self,
@@ -334,8 +379,8 @@ class ActivitySearchTool:
         return tips[:3]
 
     def _generate_fallback_activities(self, destination: str) -> List[ActivityOption]:
-        """Generate fallback activity options"""
-        return [
+        """Generate fallback activity options with placeholder images"""
+        activities = [
             ActivityOption(
                 name=f"{destination} City Walking Tour",
                 category="Sightseeing",
@@ -346,7 +391,8 @@ class ActivitySearchTool:
                 rating=4.3,
                 best_time="Morning",
                 tips=["Wear comfortable shoes", "Bring water"],
-                source_url=None
+                source_url=None,
+                image_base64=create_placeholder_svg(f"{destination} Walking Tour")
             ),
             ActivityOption(
                 name=f"{destination} Food Tour",
@@ -358,7 +404,8 @@ class ActivitySearchTool:
                 rating=4.6,
                 best_time="Lunch time",
                 tips=["Come hungry", "Inform of dietary restrictions"],
-                source_url=None
+                source_url=None,
+                image_base64=create_placeholder_svg(f"{destination} Food Tour")
             ),
             ActivityOption(
                 name=f"{destination} Cultural Experience",
@@ -370,9 +417,11 @@ class ActivitySearchTool:
                 rating=4.4,
                 best_time="Morning or afternoon",
                 tips=["Book in advance", "Dress respectfully"],
-                source_url=None
+                source_url=None,
+                image_base64=create_placeholder_svg(f"{destination} Cultural")
             ),
         ]
+        return activities
 
     def _format_result(
         self,

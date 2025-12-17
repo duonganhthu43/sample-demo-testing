@@ -5,7 +5,7 @@ Uses LLM to format itinerary data into professional markdown output
 
 import json
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from ..utils.config import get_config
 
@@ -23,7 +23,7 @@ class PresentationResult:
         }
 
 
-PRESENTATION_SYSTEM_PROMPT = """You are a professional travel document formatter. Your task is to take raw travel itinerary data and format it into a beautiful, professional markdown document.
+PRESENTATION_SYSTEM_PROMPT = """You are a professional travel document formatter. Your task is to take raw travel itinerary data and format it into a beautiful, professional markdown document with embedded images.
 
 ## Output Requirements
 
@@ -32,6 +32,10 @@ Create a well-structured markdown document with:
 1. **Header Section**
    - Trip title with destination and emoji
    - Travel dates prominently displayed
+   - **IMPORTANT: If a destination hero image (image_base64) is provided, embed it right after the title using:**
+     ```
+     ![Destination Name](data:image/jpeg;base64,...)
+     ```
    - A horizontal rule separator
 
 2. **Trip Overview Table**
@@ -48,6 +52,10 @@ Create a well-structured markdown document with:
    - Add a brief note explaining why the selected flights were chosen
 
 4. **Accommodation Section**
+   - **IMPORTANT: For each hotel that has image_base64 data, embed the image:**
+     ```
+     ![Hotel Name](data:image/jpeg;base64,...)
+     ```
    - Show ALL hotel options in a comparison table with columns:
      | Hotel | Location | Price/Night | Total | Rating | Near Transport | Amenities |
    - Use ⭐ stars for ratings (e.g., ⭐⭐⭐⭐)
@@ -58,6 +66,10 @@ Create a well-structured markdown document with:
 5. **Day-by-Day Itinerary**
    - Each day as a subsection with day number and theme
    - Daily cost estimate
+   - **IMPORTANT: For each activity that has image_base64 data, embed the image before or alongside the activity:**
+     ```
+     ![Activity Name](data:image/jpeg;base64,...)
+     ```
    - Table format: Time | Activity | Location | Cost
    - Link activities if source URLs available
    - Add tips/notes for each day
@@ -83,6 +95,19 @@ Create a well-structured markdown document with:
 10. **Footer**
     - Disclaimer about prices/availability
     - Friendly sign-off
+
+## Image Embedding Guidelines
+- When an item has `has_image: true`, embed it using a PLACEHOLDER syntax:
+  ```
+  ![Activity Name](IMAGE_PLACEHOLDER:activity_name_here)
+  ```
+- The placeholder will be replaced with actual image data after formatting
+- Include image placeholders for:
+  - Destination hero image (at the top, after title): `![Destination](IMAGE_PLACEHOLDER:hero)`
+  - Hotel images: `![Hotel Name](IMAGE_PLACEHOLDER:hotel_name)`
+  - Activity images: `![Activity Name](IMAGE_PLACEHOLDER:activity_name)`
+- Use the exact name from the data as the placeholder key
+- Place images prominently to make the document visually engaging
 
 ## Formatting Guidelines
 - Use emojis appropriately (✈️ 🏨 📅 💰 🎒 ⚠️ ✅)
@@ -123,7 +148,10 @@ class PresentationAgent:
         itinerary = itinerary or {}
         context = context or {}
 
-        # Prepare the data for the LLM
+        # Build image registry for post-processing (keeps base64 out of LLM context)
+        image_registry = self._build_image_registry(context)
+
+        # Prepare the data for the LLM (without base64 data)
         data_summary = self._prepare_data_summary(itinerary, context)
 
         # Get LLM client
@@ -148,6 +176,10 @@ class PresentationAgent:
             )
 
             markdown = response.choices[0].message.content
+
+            # Post-process: Replace IMAGE_PLACEHOLDER with actual base64 data
+            markdown = self._replace_image_placeholders(markdown, image_registry)
+
             print("Presentation formatted successfully")
 
             return PresentationResult(markdown=markdown)
@@ -179,6 +211,11 @@ class PresentationAgent:
         sections.append(f"Total Estimated Cost: ${itinerary.get('total_estimated_cost', 0):,.0f} {itinerary.get('currency', 'USD')}")
         sections.append(f"Number of Days: {len(itinerary.get('days', []))}")
 
+        # Note if hero image is available (don't pass actual base64 to save tokens)
+        if self._get_hero_image(context):
+            sections.append(f"\n## DESTINATION HERO IMAGE")
+            sections.append(f"has_image: true (use IMAGE_PLACEHOLDER:hero)")
+
         # Destination info
         dest_info = self._get_from_research(context, "destination")
         if dest_info:
@@ -193,19 +230,19 @@ class PresentationAgent:
         flights = itinerary.get('flights')
         if flights:
             sections.append("\n## FLIGHT DATA")
-            sections.append(json.dumps(flights, indent=2, default=str))
+            sections.append(json.dumps(self._strip_base64_from_data(flights), indent=2, default=str))
 
-        # Accommodation
+        # Accommodation (strip base64 to save tokens, use has_image flag instead)
         accommodation = itinerary.get('accommodation')
         if accommodation:
             sections.append("\n## ACCOMMODATION DATA")
-            sections.append(json.dumps(accommodation, indent=2, default=str))
+            sections.append(json.dumps(self._strip_base64_from_data(accommodation), indent=2, default=str))
 
-        # Daily itinerary
+        # Daily itinerary (strip base64 to save tokens)
         days = itinerary.get('days', [])
         if days:
             sections.append("\n## DAILY ITINERARY")
-            sections.append(json.dumps(days, indent=2, default=str))
+            sections.append(json.dumps(self._strip_base64_from_data(days), indent=2, default=str))
 
         # Cost analysis
         cost_analysis = self._get_from_analysis(context, "cost")
@@ -280,6 +317,125 @@ class PresentationAgent:
             if isinstance(item, dict) and item.get("type") == type_name:
                 return item
         return {}
+
+    def _get_hero_image(self, context: Dict) -> Optional[str]:
+        """Get a hero image from activities or hotels for the destination"""
+        context = context or {}
+
+        # Try to get from activities first
+        for item in context.get("research") or []:
+            if isinstance(item, dict) and item.get("type") == "activities":
+                activities = item.get("activities", [])
+                for activity in activities:
+                    if isinstance(activity, dict) and activity.get("image_base64"):
+                        return activity["image_base64"]
+
+        # Try hotels next
+        for item in context.get("research") or []:
+            if isinstance(item, dict) and item.get("type") == "accommodations":
+                hotels = item.get("hotels", [])
+                for hotel in hotels:
+                    if isinstance(hotel, dict) and hotel.get("image_base64"):
+                        return hotel["image_base64"]
+
+        return None
+
+    def _build_image_registry(self, context: Dict) -> Dict[str, str]:
+        """
+        Build a registry of image placeholders to base64 data.
+        This keeps the actual base64 data out of the LLM context.
+        """
+        registry = {}
+        context = context or {}
+
+        # Add hero image
+        hero = self._get_hero_image(context)
+        if hero:
+            registry["hero"] = hero
+
+        # Add activity images
+        for item in context.get("research") or []:
+            if isinstance(item, dict) and item.get("type") == "activities":
+                for activity in item.get("activities", []):
+                    if isinstance(activity, dict):
+                        name = activity.get("name", "")
+                        base64 = activity.get("image_base64")
+                        if name and base64:
+                            # Normalize key for matching
+                            key = self._normalize_placeholder_key(name)
+                            registry[key] = base64
+
+        # Add hotel images
+        for item in context.get("research") or []:
+            if isinstance(item, dict) and item.get("type") == "accommodations":
+                for hotel in item.get("hotels", []):
+                    if isinstance(hotel, dict):
+                        name = hotel.get("name", "")
+                        base64 = hotel.get("image_base64")
+                        if name and base64:
+                            key = self._normalize_placeholder_key(name)
+                            registry[key] = base64
+
+        print(f"Built image registry with {len(registry)} images")
+        return registry
+
+    def _normalize_placeholder_key(self, name: str) -> str:
+        """Normalize a name for use as a placeholder key"""
+        import re
+        # Lowercase, replace spaces with underscores, remove special chars
+        key = name.lower().strip()
+        key = re.sub(r'[^a-z0-9\s]', '', key)
+        key = re.sub(r'\s+', '_', key)
+        return key
+
+    def _strip_base64_from_data(self, data: Any) -> Any:
+        """
+        Recursively strip base64 image data from dicts/lists.
+        Replaces image_base64 with has_image: true to save LLM tokens.
+        """
+        if isinstance(data, dict):
+            result = {}
+            for key, value in data.items():
+                if key == "image_base64":
+                    # Replace base64 with flag
+                    if value:
+                        result["has_image"] = True
+                    continue  # Skip the actual base64 data
+                else:
+                    result[key] = self._strip_base64_from_data(value)
+            return result
+        elif isinstance(data, list):
+            return [self._strip_base64_from_data(item) for item in data]
+        else:
+            return data
+
+    def _replace_image_placeholders(self, markdown: str, registry: Dict[str, str]) -> str:
+        """
+        Replace IMAGE_PLACEHOLDER:key patterns with actual base64 data.
+        """
+        import re
+
+        def replace_match(match):
+            key = match.group(1).lower().strip()
+            # Try exact match first
+            if key in registry:
+                return registry[key]
+            # Try normalized match
+            normalized = self._normalize_placeholder_key(key)
+            if normalized in registry:
+                return registry[normalized]
+            # Try partial match
+            for reg_key, base64 in registry.items():
+                if key in reg_key or reg_key in key:
+                    return base64
+            # No match found, return placeholder as-is
+            return match.group(0)
+
+        # Replace all IMAGE_PLACEHOLDER:xxx patterns
+        pattern = r'IMAGE_PLACEHOLDER:([^)\s]+)'
+        result = re.sub(pattern, replace_match, markdown)
+
+        return result
 
     def _fallback_format(
         self,

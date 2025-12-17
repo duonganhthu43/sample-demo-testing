@@ -157,11 +157,12 @@ class TravelPlanningOrchestrator:
                             "result_summary": self._summarize_result(result)
                         })
 
+                        safe_result = self._sanitize_for_llm(result)
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "name": tc.function.name,
-                            "content": json.dumps(result)
+                            "content": json.dumps(safe_result)
                         })
                 else:
                     # No tool calls - LLM is done planning
@@ -223,6 +224,29 @@ class TravelPlanningOrchestrator:
             except Exception as e:
                 results.append({"success": False, "error": str(e)})
         return results
+
+    def _sanitize_for_llm(self, data: Any) -> Any:
+        if isinstance(data, dict):
+            sanitized: Dict[str, Any] = {}
+            for key, value in data.items():
+                if key == "image_base64":
+                    if value:
+                        sanitized["has_image"] = True
+                    continue
+                sanitized[key] = self._sanitize_for_llm(value)
+            return sanitized
+
+        if isinstance(data, list):
+            if len(data) > 50:
+                data = data[:50]
+            return [self._sanitize_for_llm(item) for item in data]
+
+        if isinstance(data, str):
+            if len(data) > 2000:
+                return data[:2000] + "..."
+            return data
+
+        return data
 
     def _execute_tools_parallel(self, tool_calls) -> List[Dict[str, Any]]:
         """Execute tools in parallel using ThreadPoolExecutor"""

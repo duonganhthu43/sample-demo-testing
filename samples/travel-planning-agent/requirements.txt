@@ -7,6 +7,9 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 
+# Image Processing
+Pillow>=10.0.0
+
 # Search APIs (optional)
 tavily-python>=0.3.0
 

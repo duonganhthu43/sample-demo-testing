@@ -250,19 +250,19 @@ class ItineraryAgent:
 
             elif item_type == "accommodations":
                 sections.append("\n## ACCOMMODATION DATA")
-                sections.append(json.dumps({
+                sections.append(json.dumps(self._strip_base64_from_data({
                     "best_value": item.get("best_value"),
                     "highest_rated": item.get("highest_rated"),
                     "options": item.get("hotels", [])[:5]
-                }, indent=2, default=str))
+                }), indent=2, default=str))
 
             elif item_type == "activities":
                 sections.append("\n## ACTIVITIES DATA")
-                sections.append(json.dumps({
+                sections.append(json.dumps(self._strip_base64_from_data({
                     "activities": item.get("activities", []),
                     "must_do": item.get("must_do", []),
                     "free_activities": item.get("free_activities", [])
-                }, indent=2, default=str))
+                }), indent=2, default=str))
 
         # Weather
         weather = context.get("weather", {})
@@ -281,6 +281,29 @@ class ItineraryAgent:
                 sections.append(f"Tips: {item.get('cost_saving_tips', [])}")
 
         return "\n".join(sections)
+
+    def _strip_base64_from_data(self, data: Any) -> Any:
+        if isinstance(data, dict):
+            result: Dict[str, Any] = {}
+            for key, value in data.items():
+                if key == "image_base64":
+                    if value:
+                        result["has_image"] = True
+                    continue
+                result[key] = self._strip_base64_from_data(value)
+            return result
+
+        if isinstance(data, list):
+            if len(data) > 50:
+                data = data[:50]
+            return [self._strip_base64_from_data(item) for item in data]
+
+        if isinstance(data, str):
+            if len(data) > 2000:
+                return data[:2000] + "..."
+            return data
+
+        return data
 
     def _parse_llm_response(self, content: str) -> Dict[str, Any]:
         """Parse LLM JSON response"""

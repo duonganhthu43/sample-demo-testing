@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import re
 
 from ..utils.config import get_config
+from .image_utils import download_and_encode_base64, create_placeholder_svg
 
 
 @dataclass
@@ -22,6 +23,8 @@ class HotelOption:
     near_transport: bool
     booking_url: str = ""
     description: str = ""
+    image_url: Optional[str] = None
+    image_base64: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -33,7 +36,9 @@ class HotelOption:
             "distance_to_center": self.distance_to_center,
             "near_transport": self.near_transport,
             "booking_url": self.booking_url,
-            "description": self.description
+            "description": self.description,
+            "image_url": self.image_url,
+            "image_base64": self.image_base64
         }
 
 
@@ -124,6 +129,7 @@ class HotelSearchTool:
             client = TavilyClient(api_key=self.config.search.tavily_api_key)
             hotels = []
             seen_hotels = set()
+            collected_images = []  # Collect images from all queries
 
             # Build search queries
             queries = [
@@ -139,8 +145,17 @@ class HotelSearchTool:
                     response = client.search(
                         query=query,
                         max_results=5,
-                        search_depth="basic"
+                        search_depth="basic",
+                        include_images=True  # Enable image fetching
                     )
+
+                    # Collect images from the response
+                    images = response.get("images", [])
+                    for img in images:
+                        if isinstance(img, str):
+                            collected_images.append(img)
+                        elif isinstance(img, dict) and img.get("url"):
+                            collected_images.append(img["url"])
 
                     for result in response.get("results", []):
                         parsed_hotels = self._parse_tavily_hotel_result(result, destination)
@@ -153,7 +168,10 @@ class HotelSearchTool:
                     print(f"  Query failed: {str(e)}")
                     continue
 
-            print(f"Found {len(hotels)} hotel options via Tavily")
+            # Assign images to hotels
+            self._assign_images_to_hotels(hotels, collected_images)
+
+            print(f"Found {len(hotels)} hotel options via Tavily (with {len(collected_images)} images)")
 
             # If we got very few results, supplement with fallback data
             if len(hotels) < 3:
@@ -167,6 +185,33 @@ class HotelSearchTool:
         except Exception as e:
             print(f"Tavily hotel search failed: {str(e)}")
             return self._generate_fallback_hotels(destination)
+
+    def _assign_images_to_hotels(
+        self,
+        hotels: List[HotelOption],
+        image_urls: List[str]
+    ) -> None:
+        """Assign and encode images to hotels"""
+        if not image_urls:
+            # Use placeholders if no images available
+            for hotel in hotels:
+                hotel.image_base64 = create_placeholder_svg(hotel.name)
+            return
+
+        # Distribute images to hotels (round-robin if fewer images than hotels)
+        for i, hotel in enumerate(hotels):
+            if i < len(image_urls):
+                image_url = image_urls[i]
+                hotel.image_url = image_url
+                print(f"  Downloading image for {hotel.name}...")
+                hotel.image_base64 = download_and_encode_base64(image_url)
+
+                # Use placeholder if download failed
+                if not hotel.image_base64:
+                    hotel.image_base64 = create_placeholder_svg(hotel.name)
+            else:
+                # No more images, use placeholder
+                hotel.image_base64 = create_placeholder_svg(hotel.name)
 
     def _parse_tavily_hotel_result(
         self,
@@ -263,7 +308,7 @@ class HotelSearchTool:
             return 120
 
     def _generate_fallback_hotels(self, destination: str) -> List[HotelOption]:
-        """Generate fallback hotel options"""
+        """Generate fallback hotel options with placeholder images"""
         import random
 
         hotels = [
@@ -286,7 +331,8 @@ class HotelSearchTool:
                 distance_to_center=f"{random.uniform(0.3, 2.5):.1f} km",
                 near_transport=near,
                 booking_url="",
-                description=f"Comfortable accommodation in {destination} with modern amenities."
+                description=f"Comfortable accommodation in {destination} with modern amenities.",
+                image_base64=create_placeholder_svg(name)
             ))
 
         return result

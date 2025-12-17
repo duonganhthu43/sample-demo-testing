@@ -397,7 +397,7 @@ class AnalysisAgent:
         sections = []
 
         sections.append("## ITINERARY")
-        sections.append(json.dumps(itinerary, indent=2, default=str))
+        sections.append(json.dumps(self._strip_base64_from_data(itinerary), indent=2, default=str))
 
         sections.append("\n## CONSTRAINTS")
         sections.append(f"Budget: {constraints.get('budget', 'Not specified')}")
@@ -423,13 +423,13 @@ class AnalysisAgent:
         sections.append(f"Duration: {num_days} days ({num_days - 1} nights)")
 
         sections.append("\n## FLIGHT DATA")
-        sections.append(json.dumps(flights, indent=2, default=str))
+        sections.append(json.dumps(self._strip_base64_from_data(flights), indent=2, default=str))
 
         sections.append("\n## HOTEL DATA")
-        sections.append(json.dumps(hotels, indent=2, default=str))
+        sections.append(json.dumps(self._strip_base64_from_data(hotels), indent=2, default=str))
 
         sections.append("\n## ACTIVITIES")
-        sections.append(json.dumps(activities, indent=2, default=str))
+        sections.append(json.dumps(self._strip_base64_from_data(activities), indent=2, default=str))
 
         return "\n".join(sections)
 
@@ -450,7 +450,7 @@ class AnalysisAgent:
             sections.append(f"- {pref}")
 
         sections.append("\n## ACTIVITIES TO SCHEDULE")
-        sections.append(json.dumps(activities, indent=2, default=str))
+        sections.append(json.dumps(self._strip_base64_from_data(activities), indent=2, default=str))
 
         return "\n".join(sections)
 
@@ -471,6 +471,29 @@ class AnalysisAgent:
         except json.JSONDecodeError as e:
             print(f"JSON parse error: {e}")
             return {}
+
+    def _strip_base64_from_data(self, data: Any) -> Any:
+        if isinstance(data, dict):
+            result: Dict[str, Any] = {}
+            for key, value in data.items():
+                if key == "image_base64":
+                    if value:
+                        result["has_image"] = True
+                    continue
+                result[key] = self._strip_base64_from_data(value)
+            return result
+
+        if isinstance(data, list):
+            if len(data) > 50:
+                data = data[:50]
+            return [self._strip_base64_from_data(item) for item in data]
+
+        if isinstance(data, str):
+            if len(data) > 2000:
+                return data[:2000] + "..."
+            return data
+
+        return data
 
     def _fallback_feasibility(
         self,
