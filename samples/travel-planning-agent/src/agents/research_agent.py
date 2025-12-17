@@ -1,14 +1,13 @@
 """
 Research Agent for Travel Planning
-Gathers information about destinations, flights, hotels, and activities using Tavily
+Gathers information about destinations, flights, hotels, and activities using Tavily + LLM
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
-import re
 
 from ..utils.config import get_config
-from ..utils.prompts import RESEARCH_AGENT_PROMPT
 from ..tools import FlightSearchTool, HotelSearchTool, ActivitySearchTool
 
 
@@ -114,9 +113,41 @@ class ActivityResearchResult:
         }
 
 
+DESTINATION_EXTRACTION_PROMPT = """You are a travel information extraction expert. Your task is to extract structured travel information from raw search results.
+
+## Input
+You will receive search results about a travel destination. Extract the following information:
+
+## Output Format
+Return a valid JSON object with this structure:
+```json
+{
+    "overview": "2-3 sentence overview of the destination",
+    "visa_requirements": "Visa requirements for tourists (be specific about duration, requirements)",
+    "best_time_to_visit": "Best months/seasons to visit with reasoning",
+    "language": "Official language(s) and English proficiency level",
+    "currency": "Local currency name and code (e.g., 'Japanese Yen (JPY)')",
+    "time_zone": "Timezone abbreviation and UTC offset (e.g., 'JST (UTC+9)')",
+    "cultural_tips": ["Tip 1", "Tip 2", "Tip 3", "Tip 4"],
+    "safety_rating": "Very Safe / Safe / Moderate / Exercise Caution",
+    "local_cuisine": ["Dish 1", "Dish 2", "Dish 3"]
+}
+```
+
+## Guidelines:
+1. Extract ONLY information found in the search results
+2. If information is not found, provide a reasonable general answer based on the destination
+3. Be specific and actionable in your tips
+4. Cultural tips should be practical for tourists
+5. Local cuisine should list specific dishes, not general descriptions
+6. Safety rating should be based on search results or general knowledge
+
+IMPORTANT: Return ONLY the JSON object, no markdown formatting or explanation."""
+
+
 class ResearchAgent:
     """
-    Research agent for gathering travel information using Tavily
+    Research agent for gathering travel information using Tavily + LLM
     """
 
     def __init__(self, config=None):
@@ -124,17 +155,15 @@ class ResearchAgent:
         self.flight_tool = FlightSearchTool()
         self.hotel_tool = HotelSearchTool()
         self.activity_tool = ActivitySearchTool()
-        self.mock_mode = self.config.app.mock_external_apis
 
-        if not self.config.search.tavily_api_key:
-            self.mock_mode = True
-            print("Tavily key not found - using fallback for destination research")
+        if self.config.search.tavily_api_key:
+            print("ResearchAgent initialized with Tavily API")
         else:
-            print(f"ResearchAgent initialized with Tavily (mock_mode: {self.mock_mode})")
+            print("Warning: Tavily API key not found - will use fallback data")
 
     def research_destination(self, destination: str) -> DestinationResult:
         """
-        Research destination information using Tavily
+        Research destination information using Tavily + LLM
 
         Args:
             destination: Name of destination city/country
@@ -142,44 +171,33 @@ class ResearchAgent:
         Returns:
             DestinationResult with comprehensive destination info
         """
-        print(f"Researching destination: {destination} via Tavily...")
+        print(f"Researching destination: {destination} via Tavily + LLM...")
 
-        if self.mock_mode:
-            return self._generate_fallback_destination(destination)
-
+        # Always try Tavily first - fallback is handled inside
         return self._search_tavily_destination(destination)
 
     def _search_tavily_destination(self, destination: str) -> DestinationResult:
-        """Search for destination info using Tavily API"""
+        """Search for destination info using Tavily API and extract with LLM"""
         try:
             from tavily import TavilyClient
 
             client = TavilyClient(api_key=self.config.search.tavily_api_key)
 
-            # Search for different aspects of the destination
-            info = {
-                "overview": "",
-                "visa": "",
-                "best_time": "",
-                "language": "",
-                "currency": "",
-                "timezone": "",
-                "cultural_tips": [],
-                "safety": "",
-                "cuisine": [],
-                "sources": []
-            }
+            # Collect all search results
+            all_content = []
+            sources = []
 
             queries = [
-                (f"{destination} travel guide overview", "overview"),
-                (f"{destination} visa requirements tourists", "visa"),
-                (f"{destination} best time to visit weather", "best_time"),
-                (f"{destination} local language currency tips", "practical"),
-                (f"{destination} cultural etiquette customs tips", "culture"),
-                (f"{destination} local food cuisine must try", "food"),
+                f"{destination} travel guide overview",
+                f"{destination} visa requirements tourists",
+                f"{destination} best time to visit weather",
+                f"{destination} local language currency timezone",
+                f"{destination} cultural etiquette customs tips",
+                f"{destination} local food cuisine must try dishes",
+                f"{destination} safety travel advisory",
             ]
 
-            for query, info_type in queries:
+            for query in queries:
                 try:
                     print(f"  Tavily query: {query}")
                     response = client.search(
@@ -192,249 +210,146 @@ class ResearchAgent:
                         content = result.get("content", "")
                         url = result.get("url", "")
 
-                        if url and url not in info["sources"]:
-                            info["sources"].append(url)
-
-                        if info_type == "overview" and not info["overview"]:
-                            info["overview"] = content[:400] + "..." if len(content) > 400 else content
-
-                        elif info_type == "visa":
-                            visa_info = self._extract_visa_info(content)
-                            if visa_info and not info["visa"]:
-                                info["visa"] = visa_info
-
-                        elif info_type == "best_time" and not info["best_time"]:
-                            info["best_time"] = self._extract_best_time(content)
-
-                        elif info_type == "practical":
-                            if not info["language"]:
-                                info["language"] = self._extract_language(content, destination)
-                            if not info["currency"]:
-                                info["currency"] = self._extract_currency(content, destination)
-
-                        elif info_type == "culture":
-                            tips = self._extract_cultural_tips(content)
-                            info["cultural_tips"].extend(tips)
-
-                        elif info_type == "food":
-                            foods = self._extract_cuisine(content)
-                            info["cuisine"].extend(foods)
+                        if content:
+                            all_content.append(content)
+                        if url and url not in sources:
+                            sources.append(url)
 
                 except Exception as e:
                     print(f"  Query failed: {str(e)}")
                     continue
 
-            # Deduplicate and limit
-            info["cultural_tips"] = list(set(info["cultural_tips"]))[:6]
-            info["cuisine"] = list(set(info["cuisine"]))[:5]
-            info["sources"] = info["sources"][:5]
-
-            # Get timezone
-            info["timezone"] = self._get_timezone(destination)
-
-            # Get safety rating
-            info["safety"] = self._estimate_safety_rating(destination)
+            # Use LLM to extract structured info from all content
+            if all_content:
+                extracted = self._extract_with_llm(destination, all_content)
+            else:
+                extracted = {}
 
             return DestinationResult(
                 destination=destination,
-                overview=info["overview"] or f"{destination} is a popular tourist destination.",
-                visa_requirements=info["visa"] or "Check with your local embassy for visa requirements.",
-                best_time_to_visit=info["best_time"] or "Research local weather patterns for best timing.",
-                language=info["language"] or "Local language (English may be spoken in tourist areas)",
-                currency=info["currency"] or "Check local currency before traveling",
-                time_zone=info["timezone"],
-                cultural_tips=info["cultural_tips"] or ["Research local customs before visiting"],
-                safety_rating=info["safety"],
-                local_cuisine=info["cuisine"],
-                sources=info["sources"]
+                overview=extracted.get("overview", f"{destination} is a popular tourist destination."),
+                visa_requirements=extracted.get("visa_requirements", "Check with your local embassy for visa requirements."),
+                best_time_to_visit=extracted.get("best_time_to_visit", "Research local weather patterns for the best time to visit."),
+                language=extracted.get("language", "Local language (English may be spoken in tourist areas)"),
+                currency=extracted.get("currency", "Check local currency before traveling"),
+                time_zone=extracted.get("time_zone", "Check local timezone"),
+                cultural_tips=extracted.get("cultural_tips", ["Research local customs before visiting"]),
+                safety_rating=extracted.get("safety_rating", "Check travel advisories"),
+                local_cuisine=extracted.get("local_cuisine", []),
+                sources=sources[:5]
             )
 
         except Exception as e:
             print(f"Tavily destination search failed: {str(e)}")
             return self._generate_fallback_destination(destination)
 
-    def _extract_visa_info(self, content: str) -> str:
-        """Extract visa information from content"""
-        visa_patterns = [
-            r'visa[- ]?free.{0,50}(\d+)\s*days?',
-            r'no visa required.{0,100}',
-            r'visa on arrival.{0,100}',
-            r'visa required.{0,100}',
-        ]
+    def _extract_with_llm(self, destination: str, content_list: List[str]) -> Dict[str, Any]:
+        """Use LLM to extract structured info from search results"""
+        try:
+            # Get LLM client
+            llm_client = self.config.get_llm_client(label="research_agent_extraction")
 
-        for pattern in visa_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                return match.group(0)[:150]
+            # Combine content (limit to avoid token limits)
+            combined_content = "\n\n---\n\n".join(content_list[:10])
+            if len(combined_content) > 8000:
+                combined_content = combined_content[:8000] + "..."
 
-        if "visa" in content.lower():
-            # Extract sentence with visa
-            sentences = content.split('.')
-            for sentence in sentences:
-                if "visa" in sentence.lower():
-                    return sentence.strip()[:150]
+            response = llm_client.chat.completions.create(
+                model=self.config.llm.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": DESTINATION_EXTRACTION_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Extract travel information for {destination} from these search results:\n\n{combined_content}"
+                    }
+                ],
+                temperature=0.2,
+                max_tokens=1500
+            )
 
-        return ""
+            content = response.choices[0].message.content
+            return self._parse_llm_response(content)
 
-    def _extract_best_time(self, content: str) -> str:
-        """Extract best time to visit from content"""
-        patterns = [
-            r'best time to visit.{0,150}',
-            r'ideal time.{0,100}',
-            r'(spring|summer|fall|autumn|winter).{0,100}(best|ideal|recommended)',
-            r'(march|april|may|june|july|august|september|october|november|december).{0,100}(best|ideal)',
-        ]
+        except Exception as e:
+            print(f"LLM extraction failed: {str(e)}")
+            return {}
 
-        for pattern in patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                return match.group(0)[:200]
+    def _parse_llm_response(self, content: str) -> Dict[str, Any]:
+        """Parse LLM JSON response"""
+        try:
+            content = content.strip()
 
-        return ""
+            # Remove markdown code blocks if present
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
 
-    def _extract_language(self, content: str, destination: str) -> str:
-        """Extract language info"""
-        lang_map = {
-            "japan": "Japanese (English signage in tourist areas)",
-            "tokyo": "Japanese (English signage in tourist areas)",
-            "france": "French (some English in tourist areas)",
-            "paris": "French (some English in tourist areas)",
-            "spain": "Spanish (some English in tourist areas)",
-            "thailand": "Thai (English common in tourist areas)",
-            "bangkok": "Thai (English common in tourist areas)",
-            "korea": "Korean (English in major cities)",
-            "seoul": "Korean (English in major cities)",
-            "china": "Mandarin Chinese (limited English)",
-            "singapore": "English, Mandarin, Malay, Tamil",
-            "vietnam": "Vietnamese (some English in tourist areas)",
-        }
-
-        for key, lang in lang_map.items():
-            if key in destination.lower():
-                return lang
-
-        return "Local language - research before visiting"
-
-    def _extract_currency(self, content: str, destination: str) -> str:
-        """Extract currency info"""
-        currency_map = {
-            "japan": "Japanese Yen (JPY) - Many places cash only",
-            "tokyo": "Japanese Yen (JPY) - Many places cash only",
-            "usa": "US Dollar (USD)",
-            "europe": "Euro (EUR)",
-            "uk": "British Pound (GBP)",
-            "thailand": "Thai Baht (THB)",
-            "singapore": "Singapore Dollar (SGD)",
-            "korea": "Korean Won (KRW)",
-            "china": "Chinese Yuan (CNY)",
-            "vietnam": "Vietnamese Dong (VND)",
-            "indonesia": "Indonesian Rupiah (IDR)",
-            "bali": "Indonesian Rupiah (IDR)",
-        }
-
-        for key, curr in currency_map.items():
-            if key in destination.lower():
-                return curr
-
-        return "Check local currency and exchange rates"
-
-    def _get_timezone(self, destination: str) -> str:
-        """Get timezone for destination"""
-        tz_map = {
-            "tokyo": "JST (UTC+9)",
-            "japan": "JST (UTC+9)",
-            "singapore": "SGT (UTC+8)",
-            "bangkok": "ICT (UTC+7)",
-            "thailand": "ICT (UTC+7)",
-            "london": "GMT/BST (UTC+0/+1)",
-            "paris": "CET (UTC+1)",
-            "new york": "EST/EDT (UTC-5/-4)",
-            "los angeles": "PST/PDT (UTC-8/-7)",
-            "seoul": "KST (UTC+9)",
-            "hong kong": "HKT (UTC+8)",
-            "sydney": "AEST (UTC+10)",
-            "dubai": "GST (UTC+4)",
-        }
-
-        for key, tz in tz_map.items():
-            if key in destination.lower():
-                return tz
-
-        return "Check local timezone"
-
-    def _extract_cultural_tips(self, content: str) -> List[str]:
-        """Extract cultural tips from content"""
-        tips = []
-
-        tip_patterns = [
-            r"(don't|do not|avoid).{10,80}",
-            r"(should|must|always).{10,80}",
-            r"(tip[ping]?|bow|greeting|etiquette).{10,80}",
-            r"(respect|polite|rude).{10,80}",
-        ]
-
-        for pattern in tip_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE)
-            for match in matches[:2]:
-                if isinstance(match, str) and len(match) > 15:
-                    tips.append(match.strip()[:100])
-
-        return tips[:4]
-
-    def _extract_cuisine(self, content: str) -> List[str]:
-        """Extract local cuisine from content"""
-        foods = []
-
-        # Look for food-related patterns
-        food_patterns = [
-            r"must try.{0,50}",
-            r"famous for.{0,50}(food|dish|cuisine)",
-            r"local (dish|food|specialty).{0,50}",
-        ]
-
-        for pattern in food_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE)
-            foods.extend(matches[:2])
-
-        return foods[:5]
-
-    def _estimate_safety_rating(self, destination: str) -> str:
-        """Estimate safety rating based on destination"""
-        very_safe = ["japan", "tokyo", "singapore", "iceland", "switzerland", "norway", "denmark"]
-        safe = ["korea", "seoul", "taiwan", "australia", "new zealand", "canada", "uk", "london"]
-
-        dest_lower = destination.lower()
-
-        for place in very_safe:
-            if place in dest_lower:
-                return "Very Safe"
-
-        for place in safe:
-            if place in dest_lower:
-                return "Safe"
-
-        return "Check travel advisories"
+            return json.loads(content.strip())
+        except json.JSONDecodeError as e:
+            print(f"JSON parse error: {e}")
+            return {}
 
     def _generate_fallback_destination(self, destination: str) -> DestinationResult:
-        """Generate fallback destination info"""
-        return DestinationResult(
-            destination=destination,
-            overview=f"{destination} is a popular tourist destination with diverse attractions.",
-            visa_requirements="Check with your local embassy for visa requirements.",
-            best_time_to_visit="Research local weather patterns for the best time to visit.",
-            language=self._extract_language("", destination),
-            currency=self._extract_currency("", destination),
-            time_zone=self._get_timezone(destination),
-            cultural_tips=[
-                "Research local customs before visiting",
-                "Dress respectfully at religious sites",
-                "Learn basic local phrases",
-                "Be aware of local tipping customs"
-            ],
-            safety_rating=self._estimate_safety_rating(destination),
-            local_cuisine=[f"Try local {destination} cuisine"],
-            sources=[]
-        )
+        """Generate fallback destination info using LLM only"""
+        try:
+            # Try to use LLM with general knowledge
+            llm_client = self.config.get_llm_client(label="research_agent_fallback")
+
+            response = llm_client.chat.completions.create(
+                model=self.config.llm.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": DESTINATION_EXTRACTION_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Based on your knowledge, provide travel information for {destination}. Include visa requirements, language, currency, timezone, cultural tips, safety rating, and local cuisine."
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=1500
+            )
+
+            content = response.choices[0].message.content
+            extracted = self._parse_llm_response(content)
+
+            return DestinationResult(
+                destination=destination,
+                overview=extracted.get("overview", f"{destination} is a popular tourist destination."),
+                visa_requirements=extracted.get("visa_requirements", "Check with your local embassy for visa requirements."),
+                best_time_to_visit=extracted.get("best_time_to_visit", "Research local weather patterns for best timing."),
+                language=extracted.get("language", "Local language (research before visiting)"),
+                currency=extracted.get("currency", "Check local currency before traveling"),
+                time_zone=extracted.get("time_zone", "Check local timezone"),
+                cultural_tips=extracted.get("cultural_tips", ["Research local customs before visiting"]),
+                safety_rating=extracted.get("safety_rating", "Check travel advisories"),
+                local_cuisine=extracted.get("local_cuisine", []),
+                sources=[]
+            )
+
+        except Exception as e:
+            print(f"Fallback LLM generation failed: {str(e)}")
+            # Ultimate fallback - minimal info
+            return DestinationResult(
+                destination=destination,
+                overview=f"{destination} is a travel destination. Please research specific details.",
+                visa_requirements="Check with your local embassy for visa requirements.",
+                best_time_to_visit="Research local weather patterns.",
+                language="Research local language.",
+                currency="Research local currency.",
+                time_zone="Research local timezone.",
+                cultural_tips=["Research local customs before visiting"],
+                safety_rating="Check travel advisories",
+                local_cuisine=[],
+                sources=[]
+            )
 
     def research_flights(
         self,

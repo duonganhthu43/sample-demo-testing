@@ -220,11 +220,12 @@ This allows the demo to work without any real API keys.
 | File | Purpose |
 |------|---------|
 | `src/agents/agentic_orchestrator.py` | Main LLM orchestrator |
-| `src/agents/tools.py` | Tool definitions (13 tools) + ToolExecutor |
+| `src/agents/tools.py` | Tool definitions (14 tools) + ToolExecutor |
 | `src/agents/research_agent.py` | Destination, flights, hotels, activities research |
 | `src/agents/analysis_agent.py` | Feasibility, cost, schedule analysis |
 | `src/agents/specialized_agents.py` | Budget, weather, safety, transport |
 | `src/agents/itinerary_agent.py` | Itinerary generation |
+| `src/agents/presentation_agent.py` | Markdown formatting for final output |
 | `src/utils/config.py` | Configuration management |
 | `src/utils/prompts.py` | System prompts |
 
@@ -258,13 +259,14 @@ Tools have data dependencies - some require results from others before they can 
                                     │
                                     ▼
                         ┌───────────────────────┐
-                        │  generate_itinerary   │  ← MUST run last
+                        │  generate_itinerary   │  ← MUST run
                         │  (final itinerary)    │    (needs all data)
                         └───────────────────────┘
                                     │
                                     ▼
                         ┌───────────────────────┐
-                        │   generate_summary    │  ← Optional
+                        │  format_presentation  │  ← FINAL step
+                        │  (markdown output)    │    (formats everything)
                         └───────────────────────┘
 ```
 
@@ -284,6 +286,7 @@ Tools have data dependencies - some require results from others before they can 
 | `optimize_budget` | flights, hotels, activities | - |
 | `generate_itinerary` | ALL research + analysis | - |
 | `generate_summary` | itinerary | - |
+| `format_presentation` | itinerary | - |
 
 ### Why Iterations Exist
 
@@ -307,6 +310,9 @@ Iteration 3: analyze_* tools (5 tools)
 
 Iteration 4: generate_itinerary
    └── Needs ALL previous data to create final plan
+
+Iteration 5: format_presentation
+   └── Creates beautiful markdown output with tables, checklists, links
 ```
 
 ### Parallel Execution in Practice
@@ -346,5 +352,38 @@ The LLM cannot skip iterations because it needs results to make informed decisio
 2. **Parallel Tool Execution**: ThreadPoolExecutor for concurrent tools within iterations
 3. **Lazy Agent Initialization**: Agents created only when first needed
 4. **Result Caching**: Tools cache results to avoid duplicate Tavily API calls
-5. **Minimal LLM Calls**: Deterministic sub-agents don't use LLM internally
+5. **LLM-Powered Agents**: Most agents use LLM for intelligent processing
 6. **Smart Dependencies**: LLM groups independent tools for parallel execution
+
+## LLM Usage by Agent
+
+| Agent | Uses LLM | Purpose |
+|-------|----------|---------|
+| `AgenticOrchestrator` | ✅ Yes | Main decision-making loop |
+| `ResearchAgent` | ✅ Yes | Tavily API + LLM for info extraction |
+| `AnalysisAgent` | ✅ Yes | Intelligent feasibility, cost, schedule analysis |
+| `SpecializedAgents` | ❌ No | Tavily API + calculations |
+| `ItineraryAgent` | ✅ Yes | Generates intelligent day-by-day schedules |
+| `PresentationAgent` | ✅ Yes | Formats output as professional markdown |
+
+### ResearchAgent
+Uses Tavily API to search for destination information, then LLM to extract structured data:
+- Visa requirements, language, currency, timezone
+- Cultural tips and local cuisine
+- Safety ratings and best time to visit
+
+### AnalysisAgent
+Uses LLM for intelligent analysis:
+- **Feasibility Analysis**: Evaluates if itinerary is realistic based on time, logistics, budget
+- **Cost Breakdown**: Calculates costs with destination-specific estimates for food/transport
+- **Schedule Optimization**: Groups activities by location, optimizes travel time
+
+### ItineraryAgent
+Uses LLM to generate intelligent itineraries with:
+- Realistic time schedules based on activity durations
+- Appropriate meal times for the destination
+- Cost estimates based on destination cost level
+- Context-aware packing lists and notes
+
+### PresentationAgent
+Uses LLM to generate beautiful, context-aware markdown formatting with tables, checklists, and links.

@@ -331,6 +331,18 @@ TOOL_DEFINITIONS = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "format_presentation",
+            "description": "Format the itinerary into a professional markdown document with tables, checklists, and links. Call this as the FINAL step after generate_itinerary.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
     }
 ]
 
@@ -352,6 +364,7 @@ class ToolExecutor:
         self._safety_agent = None
         self._transport_agent = None
         self._itinerary_agent = None
+        self._presentation_agent = None
 
         # Context accumulation
         self.context = {
@@ -407,6 +420,12 @@ class ToolExecutor:
             from .itinerary_agent import ItineraryAgent
             self._itinerary_agent = ItineraryAgent(self.config)
         return self._itinerary_agent
+
+    def _get_presentation_agent(self):
+        if self._presentation_agent is None:
+            from .presentation_agent import PresentationAgent
+            self._presentation_agent = PresentationAgent()
+        return self._presentation_agent
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -533,6 +552,13 @@ class ToolExecutor:
                 agent = self._get_itinerary_agent()
                 itinerary = self.context.get("itinerary", {})
                 result = agent.generate_summary(itinerary, self.context)
+                return {"success": True, "result": result.to_dict()}
+
+            elif tool_name == "format_presentation":
+                agent = self._get_presentation_agent()
+                itinerary = self.context.get("itinerary", {})
+                result = agent.format_itinerary(itinerary, self.context)
+                self.context["presentation"] = result.to_dict()
                 return {"success": True, "result": result.to_dict()}
 
             else:

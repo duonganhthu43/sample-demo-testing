@@ -1,14 +1,13 @@
 """
 Analysis Agent for Travel Planning
-Analyzes itinerary feasibility, costs, and schedule optimization
+Uses LLM to analyze itinerary feasibility, costs, and schedule optimization
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
-import json
 
 from ..utils.config import get_config
-from ..utils.prompts import ANALYSIS_AGENT_PROMPT
 
 
 @dataclass
@@ -70,9 +69,140 @@ class ScheduleOptimizationResult:
         }
 
 
+FEASIBILITY_SYSTEM_PROMPT = """You are a travel planning analyst specializing in itinerary feasibility assessment.
+
+Analyze the provided itinerary and constraints to determine if the travel plan is realistic and achievable.
+
+## Your Analysis Should Consider:
+1. **Time Constraints**: Are there enough hours in each day for planned activities?
+2. **Travel Logistics**: Can the traveler realistically move between locations?
+3. **Budget Alignment**: Do costs align with the stated budget?
+4. **Hard Constraints**: Are non-negotiable requirements (arrival times, direct flights) met?
+5. **Preference Alignment**: Does the plan match stated preferences?
+6. **Physical Feasibility**: Is the pace sustainable without exhaustion?
+
+## Output Format
+Return a valid JSON object:
+```json
+{
+    "is_feasible": true,
+    "confidence": 0.85,
+    "issues": ["Critical problem that makes plan unfeasible"],
+    "warnings": ["Potential concern to be aware of"],
+    "suggestions": ["Recommendation to improve the plan"],
+    "schedule_analysis": {
+        "total_days": 5,
+        "activities_per_day": 2,
+        "estimated_daily_travel_time": "2.5 hours",
+        "pace_assessment": "moderate",
+        "buffer_time": "adequate"
+    }
+}
+```
+
+## Guidelines:
+- `is_feasible`: true if plan can reasonably be executed, false if critical blockers exist
+- `confidence`: 0.0-1.0 score based on how certain you are of the assessment
+- `issues`: Only list genuine blockers that prevent execution
+- `warnings`: List concerns that need attention but aren't blockers
+- `suggestions`: Actionable improvements to make the plan better
+
+IMPORTANT: Return ONLY the JSON object, no markdown formatting or explanation."""
+
+
+COST_ANALYSIS_SYSTEM_PROMPT = """You are a travel budget analyst specializing in trip cost estimation.
+
+Analyze the provided travel data to create an accurate cost breakdown and budget assessment.
+
+## Your Analysis Should Include:
+1. **Flights**: Extract actual prices from flight data
+2. **Accommodation**: Calculate total hotel costs (price × nights)
+3. **Activities**: Sum activity costs from provided data
+4. **Food Estimate**: Based on destination's cost of living
+5. **Local Transport**: Based on destination's transport costs
+6. **Miscellaneous**: Buffer for unexpected expenses
+
+## Output Format
+Return a valid JSON object:
+```json
+{
+    "total_estimated_cost": 1250.00,
+    "currency": "USD",
+    "breakdown": {
+        "flights": 450.00,
+        "accommodation": 400.00,
+        "activities": 150.00,
+        "food": 175.00,
+        "local_transport": 50.00,
+        "miscellaneous": 25.00
+    },
+    "within_budget": true,
+    "budget_remaining": 250.00,
+    "cost_saving_tips": [
+        "Specific actionable tip based on the breakdown",
+        "Another tip relevant to this destination"
+    ]
+}
+```
+
+## Guidelines:
+- Use ACTUAL prices from the provided flight and hotel data
+- Estimate food costs based on destination (expensive cities like Tokyo/London vs budget destinations)
+- Estimate transport based on typical transit pass costs for the destination
+- Provide destination-specific cost saving tips
+- Be realistic but not pessimistic with estimates
+
+IMPORTANT: Return ONLY the JSON object, no markdown formatting or explanation."""
+
+
+SCHEDULE_OPTIMIZATION_SYSTEM_PROMPT = """You are a travel schedule optimizer specializing in efficient itinerary planning.
+
+Optimize the provided activities into an efficient daily schedule that maximizes enjoyment while minimizing wasted time.
+
+## Optimization Criteria:
+1. **Geographic Grouping**: Activities in same area on same day
+2. **Time Efficiency**: Minimize travel between locations
+3. **Energy Management**: Mix high-energy and relaxed activities
+4. **Preference Alignment**: Respect max activities per day preference
+5. **Opening Hours**: Consider typical attraction schedules
+6. **Logical Flow**: Morning activities first, evening ones later
+
+## Output Format
+Return a valid JSON object:
+```json
+{
+    "optimized_schedule": [
+        {
+            "day": 1,
+            "activities": [
+                {"name": "Activity 1", "location": "Location", "suggested_time": "09:00-11:00"},
+                {"name": "Activity 2", "location": "Location", "suggested_time": "14:00-16:00"}
+            ],
+            "notes": "Focus on central area attractions"
+        }
+    ],
+    "changes_made": [
+        "Grouped activities by neighborhood to reduce transit time",
+        "Moved outdoor activities to morning for better weather"
+    ],
+    "time_saved": "Approximately 2 hours per day from optimized routing",
+    "efficiency_score": 0.88
+}
+```
+
+## Guidelines:
+- Respect the maximum activities per day from preferences
+- Group activities by geographic proximity
+- Consider typical opening hours (museums often closed Mondays, etc.)
+- Leave buffer time between activities for meals and rest
+- efficiency_score is 0.0-1.0 based on how well optimized the schedule is
+
+IMPORTANT: Return ONLY the JSON object, no markdown formatting or explanation."""
+
+
 class AnalysisAgent:
     """
-    Analysis agent for evaluating travel plans
+    Analysis agent for evaluating travel plans using LLM
     """
 
     def __init__(self, config=None):
@@ -84,7 +214,7 @@ class AnalysisAgent:
         constraints: Dict[str, Any]
     ) -> FeasibilityResult:
         """
-        Analyze if the proposed itinerary is feasible
+        Analyze if the proposed itinerary is feasible using LLM
 
         Args:
             itinerary: Proposed itinerary with flights, hotels, activities
@@ -93,66 +223,48 @@ class AnalysisAgent:
         Returns:
             FeasibilityResult with analysis
         """
-        print("Analyzing itinerary feasibility...")
+        print("Analyzing itinerary feasibility with LLM...")
 
-        issues = []
-        warnings = []
-        suggestions = []
-        schedule_analysis = {}
+        # Prepare context for LLM
+        context = self._prepare_feasibility_context(itinerary, constraints)
 
-        # Check flight constraints
-        hard_constraints = constraints.get("hard_constraints", [])
-        for constraint in hard_constraints:
-            constraint_lower = constraint.lower()
+        # Get LLM client
+        client = self.config.get_llm_client(label="analysis_agent_feasibility")
 
-            if "arrive before" in constraint_lower:
-                # Check arrival time constraint
-                warnings.append(f"Verify flight arrival times meet: {constraint}")
+        try:
+            response = client.chat.completions.create(
+                model=self.config.llm.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": FEASIBILITY_SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Analyze the feasibility of this travel itinerary:\n\n{context}"
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=2000
+            )
 
-            if "direct" in constraint_lower:
-                # Check direct flight requirement
-                suggestions.append("Filter search results for direct flights only")
+            content = response.choices[0].message.content
+            data = self._parse_llm_response(content)
 
-        # Check activity density
-        activities_per_day = itinerary.get("activities_per_day", 3)
-        preferences = constraints.get("preferences", [])
+            print("Feasibility analysis completed successfully")
 
-        for pref in preferences:
-            if "no more than" in pref.lower() and "activities" in pref.lower():
-                max_activities = 2  # Extract from preference
-                if activities_per_day > max_activities:
-                    warnings.append(f"Current plan has {activities_per_day} activities/day, preference is max {max_activities}")
+            return FeasibilityResult(
+                is_feasible=data.get("is_feasible", True),
+                confidence=data.get("confidence", 0.7),
+                issues=data.get("issues", []),
+                warnings=data.get("warnings", []),
+                suggestions=data.get("suggestions", []),
+                schedule_analysis=data.get("schedule_analysis", {})
+            )
 
-        # Check budget
-        budget_str = constraints.get("budget", "")
-        if "under" in budget_str.lower():
-            # Extract budget amount
-            try:
-                budget = float(''.join(filter(str.isdigit, budget_str)))
-                schedule_analysis["budget_limit"] = budget
-            except:
-                pass
-
-        # Determine feasibility
-        is_feasible = len(issues) == 0
-        confidence = 0.8 if is_feasible else 0.5
-
-        if len(warnings) > 3:
-            confidence -= 0.1
-
-        return FeasibilityResult(
-            is_feasible=is_feasible,
-            confidence=confidence,
-            issues=issues,
-            warnings=warnings,
-            suggestions=suggestions,
-            schedule_analysis={
-                "total_days": itinerary.get("total_days", 5),
-                "activities_per_day": activities_per_day,
-                "estimated_daily_travel_time": "2-3 hours",
-                **schedule_analysis
-            }
-        )
+        except Exception as e:
+            print(f"LLM feasibility analysis failed: {str(e)}")
+            return self._fallback_feasibility(itinerary, constraints)
 
     def analyze_cost_breakdown(
         self,
@@ -164,7 +276,7 @@ class AnalysisAgent:
         currency: str = "USD"
     ) -> CostBreakdownResult:
         """
-        Analyze cost breakdown of the trip
+        Analyze cost breakdown of the trip using LLM
 
         Args:
             flights: Flight information with prices
@@ -177,62 +289,48 @@ class AnalysisAgent:
         Returns:
             CostBreakdownResult with detailed breakdown
         """
-        print("Analyzing cost breakdown...")
+        print("Analyzing cost breakdown with LLM...")
 
-        breakdown = {}
+        # Prepare context for LLM
+        context = self._prepare_cost_context(flights, hotels, activities, budget, num_days, currency)
 
-        # Calculate flight costs
-        flight_cost = 0
-        if flights:
-            outbound = flights.get("best_outbound", {})
-            return_flight = flights.get("best_return", {})
-            flight_cost = outbound.get("price", 0) + return_flight.get("price", 0)
-        breakdown["flights"] = flight_cost
+        # Get LLM client
+        client = self.config.get_llm_client(label="analysis_agent_cost")
 
-        # Calculate hotel costs
-        hotel_cost = 0
-        if hotels:
-            best_hotel = hotels.get("best_value", {})
-            per_night = best_hotel.get("price_per_night", 100)
-            hotel_cost = per_night * (num_days - 1)  # num_days - 1 nights
-        breakdown["accommodation"] = hotel_cost
+        try:
+            response = client.chat.completions.create(
+                model=self.config.llm.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": COST_ANALYSIS_SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Analyze the cost breakdown for this trip:\n\n{context}"
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=2000
+            )
 
-        # Calculate activity costs
-        activity_cost = sum(act.get("price", 0) for act in activities)
-        breakdown["activities"] = activity_cost
+            content = response.choices[0].message.content
+            data = self._parse_llm_response(content)
 
-        # Estimate food and transport
-        daily_food = 50  # Estimated daily food budget
-        daily_transport = 20  # Estimated daily local transport
-        breakdown["food"] = daily_food * num_days
-        breakdown["local_transport"] = daily_transport * num_days
+            print("Cost analysis completed successfully")
 
-        # Miscellaneous (10% buffer)
-        subtotal = sum(breakdown.values())
-        breakdown["miscellaneous"] = subtotal * 0.1
+            return CostBreakdownResult(
+                total_estimated_cost=data.get("total_estimated_cost", 0),
+                currency=data.get("currency", currency),
+                breakdown=data.get("breakdown", {}),
+                within_budget=data.get("within_budget", True),
+                budget_remaining=data.get("budget_remaining", 0),
+                cost_saving_tips=data.get("cost_saving_tips", [])
+            )
 
-        total = sum(breakdown.values())
-
-        # Cost saving tips
-        tips = []
-        if flight_cost > budget * 0.4:
-            tips.append("Flights are taking >40% of budget - consider budget airlines or flexible dates")
-        if hotel_cost > budget * 0.3:
-            tips.append("Consider hostels or Airbnb to reduce accommodation costs")
-        if activity_cost > 100:
-            tips.append("Many attractions have free admission days - check schedules")
-
-        tips.append("Get a transit pass for unlimited local transport")
-        tips.append("Eat at local restaurants rather than tourist areas")
-
-        return CostBreakdownResult(
-            total_estimated_cost=round(total, 2),
-            currency=currency,
-            breakdown={k: round(v, 2) for k, v in breakdown.items()},
-            within_budget=total <= budget,
-            budget_remaining=round(budget - total, 2),
-            cost_saving_tips=tips
-        )
+        except Exception as e:
+            print(f"LLM cost analysis failed: {str(e)}")
+            return self._fallback_cost_breakdown(flights, hotels, activities, budget, num_days, currency)
 
     def analyze_schedule_optimization(
         self,
@@ -241,7 +339,7 @@ class AnalysisAgent:
         num_days: int = 5
     ) -> ScheduleOptimizationResult:
         """
-        Optimize the activity schedule
+        Optimize the activity schedule using LLM
 
         Args:
             activities: List of planned activities
@@ -251,48 +349,223 @@ class AnalysisAgent:
         Returns:
             ScheduleOptimizationResult with optimized schedule
         """
-        print("Optimizing schedule...")
+        print("Optimizing schedule with LLM...")
 
-        # Group activities by location
-        by_location = {}
-        for act in activities:
-            loc = act.get("location", "Unknown")
-            if loc not in by_location:
-                by_location[loc] = []
-            by_location[loc].append(act)
+        # Prepare context for LLM
+        context = self._prepare_schedule_context(activities, preferences, num_days)
 
-        # Create optimized daily schedule
-        optimized = []
-        changes = []
+        # Get LLM client
+        client = self.config.get_llm_client(label="analysis_agent_schedule")
 
-        # Distribute activities across days
-        all_activities = activities.copy()
-        max_per_day = 2  # Default, can be extracted from preferences
+        try:
+            response = client.chat.completions.create(
+                model=self.config.llm.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": SCHEDULE_OPTIMIZATION_SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Optimize this activity schedule:\n\n{context}"
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=2000
+            )
 
+            content = response.choices[0].message.content
+            data = self._parse_llm_response(content)
+
+            print("Schedule optimization completed successfully")
+
+            return ScheduleOptimizationResult(
+                optimized_schedule=data.get("optimized_schedule", []),
+                changes_made=data.get("changes_made", []),
+                time_saved=data.get("time_saved", ""),
+                efficiency_score=data.get("efficiency_score", 0.8)
+            )
+
+        except Exception as e:
+            print(f"LLM schedule optimization failed: {str(e)}")
+            return self._fallback_schedule_optimization(activities, preferences, num_days)
+
+    def _prepare_feasibility_context(self, itinerary: Dict, constraints: Dict) -> str:
+        """Prepare context for feasibility analysis"""
+        sections = []
+
+        sections.append("## ITINERARY")
+        sections.append(json.dumps(itinerary, indent=2, default=str))
+
+        sections.append("\n## CONSTRAINTS")
+        sections.append(f"Budget: {constraints.get('budget', 'Not specified')}")
+        sections.append(f"Preferences: {constraints.get('preferences', [])}")
+        sections.append(f"Hard Constraints: {constraints.get('hard_constraints', [])}")
+
+        return "\n".join(sections)
+
+    def _prepare_cost_context(
+        self,
+        flights: Dict,
+        hotels: Dict,
+        activities: List[Dict],
+        budget: float,
+        num_days: int,
+        currency: str
+    ) -> str:
+        """Prepare context for cost analysis"""
+        sections = []
+
+        sections.append("## TRIP INFO")
+        sections.append(f"Budget: {budget} {currency}")
+        sections.append(f"Duration: {num_days} days ({num_days - 1} nights)")
+
+        sections.append("\n## FLIGHT DATA")
+        sections.append(json.dumps(flights, indent=2, default=str))
+
+        sections.append("\n## HOTEL DATA")
+        sections.append(json.dumps(hotels, indent=2, default=str))
+
+        sections.append("\n## ACTIVITIES")
+        sections.append(json.dumps(activities, indent=2, default=str))
+
+        return "\n".join(sections)
+
+    def _prepare_schedule_context(
+        self,
+        activities: List[Dict],
+        preferences: List[str],
+        num_days: int
+    ) -> str:
+        """Prepare context for schedule optimization"""
+        sections = []
+
+        sections.append("## TRIP DURATION")
+        sections.append(f"Number of days: {num_days}")
+
+        sections.append("\n## USER PREFERENCES")
+        for pref in preferences:
+            sections.append(f"- {pref}")
+
+        sections.append("\n## ACTIVITIES TO SCHEDULE")
+        sections.append(json.dumps(activities, indent=2, default=str))
+
+        return "\n".join(sections)
+
+    def _parse_llm_response(self, content: str) -> Dict[str, Any]:
+        """Parse LLM JSON response"""
+        try:
+            content = content.strip()
+
+            # Remove markdown code blocks if present
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+
+            return json.loads(content.strip())
+        except json.JSONDecodeError as e:
+            print(f"JSON parse error: {e}")
+            return {}
+
+    def _fallback_feasibility(
+        self,
+        itinerary: Dict[str, Any],
+        constraints: Dict[str, Any]
+    ) -> FeasibilityResult:
+        """Fallback feasibility analysis if LLM fails"""
+        return FeasibilityResult(
+            is_feasible=True,
+            confidence=0.6,
+            issues=[],
+            warnings=["Unable to perform detailed analysis - review manually"],
+            suggestions=["Verify all constraints are met"],
+            schedule_analysis={
+                "total_days": itinerary.get("total_days", 5),
+                "activities_per_day": itinerary.get("activities_per_day", 2),
+                "note": "Fallback analysis - LLM unavailable"
+            }
+        )
+
+    def _fallback_cost_breakdown(
+        self,
+        flights: Dict[str, Any],
+        hotels: Dict[str, Any],
+        activities: List[Dict[str, Any]],
+        budget: float,
+        num_days: int,
+        currency: str
+    ) -> CostBreakdownResult:
+        """Fallback cost analysis if LLM fails"""
+        # Calculate basic costs from data
+        flight_cost = 0
+        if flights:
+            outbound = flights.get("best_outbound", {})
+            return_flight = flights.get("best_return", {})
+            flight_cost = outbound.get("price", 0) + return_flight.get("price", 0)
+
+        hotel_cost = 0
+        if hotels:
+            best_hotel = hotels.get("best_value", {})
+            per_night = best_hotel.get("price_per_night", 0)
+            hotel_cost = per_night * (num_days - 1)
+
+        activity_cost = sum(act.get("price", 0) for act in activities)
+
+        breakdown = {
+            "flights": flight_cost,
+            "accommodation": hotel_cost,
+            "activities": activity_cost,
+            "food_and_transport": 0,
+            "miscellaneous": 0
+        }
+
+        total = sum(breakdown.values())
+
+        return CostBreakdownResult(
+            total_estimated_cost=round(total, 2),
+            currency=currency,
+            breakdown={k: round(v, 2) for k, v in breakdown.items()},
+            within_budget=total <= budget,
+            budget_remaining=round(budget - total, 2),
+            cost_saving_tips=["Fallback analysis - review costs manually"]
+        )
+
+    def _fallback_schedule_optimization(
+        self,
+        activities: List[Dict[str, Any]],
+        preferences: List[str],
+        num_days: int
+    ) -> ScheduleOptimizationResult:
+        """Fallback schedule optimization if LLM fails"""
+        max_per_day = 2
+
+        # Extract max from preferences
         for pref in preferences:
             if "no more than" in pref.lower() and "activities" in pref.lower():
-                # Extract max activities
                 import re
                 match = re.search(r'(\d+)', pref)
                 if match:
                     max_per_day = int(match.group(1))
 
-        for day in range(1, num_days + 1):
-            day_activities = all_activities[:max_per_day]
-            all_activities = all_activities[max_per_day:]
+        # Simple distribution
+        optimized = []
+        remaining = activities.copy()
 
+        for day in range(1, num_days + 1):
+            day_acts = remaining[:max_per_day]
+            remaining = remaining[max_per_day:]
             optimized.append({
                 "day": day,
-                "activities": day_activities,
-                "note": f"Day {day} - {len(day_activities)} activities planned"
+                "activities": day_acts,
+                "notes": f"Day {day}"
             })
-
-        changes.append(f"Limited activities to {max_per_day} per day per preferences")
-        changes.append("Grouped nearby activities on same days where possible")
 
         return ScheduleOptimizationResult(
             optimized_schedule=optimized,
-            changes_made=changes,
-            time_saved="~1-2 hours per day from optimized routing",
-            efficiency_score=0.85
+            changes_made=["Fallback analysis - basic distribution only"],
+            time_saved="Unknown",
+            efficiency_score=0.6
         )

@@ -1,14 +1,13 @@
 """
 Itinerary Agent for Travel Planning
-Generates comprehensive day-by-day travel itineraries
+Uses LLM to generate comprehensive day-by-day travel itineraries
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
-import json
 
 from ..utils.config import get_config
-from ..utils.prompts import ITINERARY_AGENT_PROMPT
 
 
 @dataclass
@@ -59,9 +58,83 @@ class SummaryResult:
         }
 
 
+ITINERARY_SYSTEM_PROMPT = """You are a travel itinerary planning expert. Your task is to create a detailed day-by-day itinerary based on the provided research data.
+
+## Your Output
+Return a valid JSON object with this exact structure:
+```json
+{
+    "days": [
+        {
+            "day": 1,
+            "date": "Day 1",
+            "theme": "Arrival & First Impressions",
+            "schedule": [
+                {
+                    "time": "09:00 - 11:00",
+                    "activity": "Activity name",
+                    "location": "Location name",
+                    "category": "Category",
+                    "notes": "Helpful tips",
+                    "cost": 25.00,
+                    "source_url": "optional url"
+                }
+            ],
+            "day_cost": 100.00
+        }
+    ],
+    "total_estimated_cost": 1500.00,
+    "summary": "Brief trip summary",
+    "packing_list": ["item1", "item2"],
+    "important_notes": ["note1", "note2"]
+}
+```
+
+## Guidelines
+1. **Timing**: Create realistic schedules with appropriate time for each activity
+   - Consider travel time between locations
+   - Include meal breaks at appropriate local times
+   - Don't overschedule - allow buffer time
+
+2. **Activities**: Use ONLY activities from the provided research data
+   - Include the actual prices from the data
+   - Use source URLs if available
+   - Categorize appropriately
+
+3. **Meals**: Include breakfast, lunch, and dinner
+   - Use food activities from research if available
+   - Estimate meal costs based on the destination's cost level
+   - Suggest local cuisine mentioned in destination info
+
+4. **Cost Calculation**: Be accurate
+   - Sum actual flight costs from flight data
+   - Calculate hotel costs (price_per_night × nights)
+   - Sum activity costs
+   - Estimate daily food and transport based on destination
+
+5. **Constraints**: Respect user constraints
+   - Stay within budget
+   - Honor max activities per day preference
+   - Meet hard constraints (arrival times, direct flights, etc.)
+
+6. **Packing List**: Based on weather and destination
+   - Include weather-appropriate clothing
+   - Add destination-specific items (temple visits = modest clothing)
+   - Include practical essentials
+
+7. **Important Notes**: Include actionable information
+   - Visa requirements
+   - Weather warnings
+   - Cultural tips
+   - Hard constraints reminders
+
+IMPORTANT: Return ONLY the JSON object, no markdown formatting or explanation.
+"""
+
+
 class ItineraryAgent:
     """
-    Agent for generating travel itineraries
+    Agent for generating travel itineraries using LLM
     """
 
     def __init__(self, config=None):
@@ -72,7 +145,7 @@ class ItineraryAgent:
         context: Dict[str, Any]
     ) -> ItineraryResult:
         """
-        Generate a comprehensive itinerary from gathered context
+        Generate a comprehensive itinerary using LLM
 
         Args:
             context: All gathered research and analysis results
@@ -80,550 +153,249 @@ class ItineraryAgent:
         Returns:
             ItineraryResult with day-by-day plan
         """
-        print("Generating comprehensive itinerary...")
+        print("Generating comprehensive itinerary with LLM...")
 
-        # Extract information from context
-        destination = context.get("destination", "Unknown")
-        travel_dates = context.get("travel_dates", "")
-        num_days = context.get("num_days", 5)
+        # Prepare context summary for LLM
+        context_summary = self._prepare_context_summary(context)
+
+        # Get LLM client
+        client = self.config.get_llm_client(label="itinerary_agent")
+
+        try:
+            response = client.chat.completions.create(
+                model=self.config.llm.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": ITINERARY_SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Create a detailed day-by-day itinerary based on this research data:\n\n{context_summary}"
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=4000
+            )
+
+            content = response.choices[0].message.content
+
+            # Parse JSON response
+            itinerary_data = self._parse_llm_response(content)
+
+            # Extract flight and hotel info for output
+            flights = self._extract_flights(context)
+            hotels = self._extract_hotels(context)
+
+            print("Itinerary generated successfully")
+
+            return ItineraryResult(
+                destination=context.get("destination", "Unknown"),
+                travel_dates=context.get("travel_dates", ""),
+                days=itinerary_data.get("days", []),
+                total_estimated_cost=itinerary_data.get("total_estimated_cost", 0),
+                currency="USD",
+                summary=itinerary_data.get("summary", ""),
+                packing_list=itinerary_data.get("packing_list", []),
+                important_notes=itinerary_data.get("important_notes", []),
+                flights=flights,
+                accommodation=hotels
+            )
+
+        except Exception as e:
+            print(f"LLM itinerary generation failed: {str(e)}")
+            # Fallback to basic generation
+            return self._fallback_generate(context)
+
+    def _prepare_context_summary(self, context: Dict[str, Any]) -> str:
+        """Prepare a structured summary of context for LLM"""
+        sections = []
+
+        # Basic trip info
+        sections.append("## TRIP DETAILS")
+        sections.append(f"Destination: {context.get('destination', 'Unknown')}")
+        sections.append(f"Travel Dates: {context.get('travel_dates', 'TBD')}")
+        sections.append(f"Number of Days: {context.get('num_days', 5)}")
+
+        # Constraints
         constraints = context.get("constraints", {})
+        if constraints:
+            sections.append("\n## CONSTRAINTS")
+            sections.append(f"Budget: {constraints.get('budget', 'Not specified')}")
+            sections.append(f"Preferences: {constraints.get('preferences', [])}")
+            sections.append(f"Hard Constraints: {constraints.get('hard_constraints', [])}")
 
-        # Get research results
+        # Research data
         research = context.get("research", [])
-        all_activities = []
-        food_activities = []
-        flights = {}
-        hotels = {}
-        destination_info = {}
-
         for item in research:
-            if item.get("type") == "activities":
-                all_activities = item.get("activities", [])
-                # Separate food activities
-                for act in all_activities:
-                    if act.get("category", "").lower() == "food":
-                        food_activities.append(act)
-            if item.get("type") == "flights":
-                flights = item
-            if item.get("type") == "accommodations":
-                hotels = item
-            if item.get("type") == "destination":
-                destination_info = item
+            item_type = item.get("type", "")
 
-        # Filter non-food activities for main schedule
-        activities = [a for a in all_activities if a.get("category", "").lower() != "food"]
+            if item_type == "destination":
+                sections.append("\n## DESTINATION INFO")
+                sections.append(f"Overview: {item.get('overview', '')[:300]}")
+                sections.append(f"Visa: {item.get('visa_requirements', 'Check requirements')}")
+                sections.append(f"Language: {item.get('language', '')}")
+                sections.append(f"Currency: {item.get('currency', '')}")
+                sections.append(f"Culture Tips: {item.get('cultural_tips', [])}")
+                sections.append(f"Local Cuisine: {item.get('local_cuisine', [])}")
 
-        # Get weather info
+            elif item_type == "flights":
+                sections.append("\n## FLIGHT DATA")
+                sections.append(json.dumps({
+                    "best_outbound": item.get("best_outbound"),
+                    "best_return": item.get("best_return"),
+                    "outbound_options": item.get("outbound_options", [])[:3],
+                    "return_options": item.get("return_options", [])[:3]
+                }, indent=2, default=str))
+
+            elif item_type == "accommodations":
+                sections.append("\n## ACCOMMODATION DATA")
+                sections.append(json.dumps({
+                    "best_value": item.get("best_value"),
+                    "highest_rated": item.get("highest_rated"),
+                    "options": item.get("hotels", [])[:5]
+                }, indent=2, default=str))
+
+            elif item_type == "activities":
+                sections.append("\n## ACTIVITIES DATA")
+                sections.append(json.dumps({
+                    "activities": item.get("activities", []),
+                    "must_do": item.get("must_do", []),
+                    "free_activities": item.get("free_activities", [])
+                }, indent=2, default=str))
+
+        # Weather
         weather = context.get("weather", {})
-        packing = weather.get("packing_suggestions", [])
+        if weather:
+            sections.append("\n## WEATHER")
+            summary = weather.get("summary", {})
+            sections.append(f"Average Temp: {summary.get('average_temp', 'N/A')}°C")
+            sections.append(f"Rain Chance: {summary.get('average_rain_chance', 0)}%")
+            sections.append(f"Packing Suggestions: {weather.get('packing_suggestions', [])}")
 
-        # Get cost analysis if available
-        cost_analysis = self._get_cost_analysis(context)
+        # Cost analysis
+        for item in context.get("analysis", []):
+            if item.get("type") == "cost":
+                sections.append("\n## COST ANALYSIS")
+                sections.append(f"Breakdown: {item.get('breakdown', {})}")
+                sections.append(f"Tips: {item.get('cost_saving_tips', [])}")
 
-        # Generate day-by-day itinerary
+        return "\n".join(sections)
+
+    def _parse_llm_response(self, content: str) -> Dict[str, Any]:
+        """Parse LLM JSON response"""
+        try:
+            # Try to extract JSON from response
+            content = content.strip()
+
+            # Remove markdown code blocks if present
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+
+            return json.loads(content.strip())
+        except json.JSONDecodeError as e:
+            print(f"JSON parse error: {e}")
+            return {"days": [], "total_estimated_cost": 0, "summary": "", "packing_list": [], "important_notes": []}
+
+    def _extract_flights(self, context: Dict) -> Optional[Dict[str, Any]]:
+        """Extract and format flight data from context"""
+        for item in context.get("research", []):
+            if item.get("type") == "flights":
+                result = {
+                    "outbound": None,
+                    "return": None,
+                    "total_flight_cost": 0,
+                    "all_outbound_options": item.get("outbound_options", [])[:5],
+                    "all_return_options": item.get("return_options", [])[:5]
+                }
+
+                best_out = item.get("best_outbound")
+                if best_out:
+                    result["outbound"] = best_out
+                    result["total_flight_cost"] += best_out.get("price", 0)
+                elif item.get("outbound_options"):
+                    result["outbound"] = item["outbound_options"][0]
+                    result["total_flight_cost"] += item["outbound_options"][0].get("price", 0)
+
+                best_ret = item.get("best_return")
+                if best_ret:
+                    result["return"] = best_ret
+                    result["total_flight_cost"] += best_ret.get("price", 0)
+                elif item.get("return_options"):
+                    result["return"] = item["return_options"][0]
+                    result["total_flight_cost"] += item["return_options"][0].get("price", 0)
+
+                return result
+        return None
+
+    def _extract_hotels(self, context: Dict) -> Optional[Dict[str, Any]]:
+        """Extract and format hotel data from context"""
+        for item in context.get("research", []):
+            if item.get("type") == "accommodations":
+                best = item.get("best_value") or item.get("highest_rated")
+                return {
+                    "recommended": best,
+                    "all_options": item.get("hotels", [])[:8],
+                    "total_options": item.get("total_options", 0),
+                    "filters_applied": item.get("filters_applied", {})
+                }
+        return None
+
+    def _fallback_generate(self, context: Dict[str, Any]) -> ItineraryResult:
+        """Fallback itinerary generation if LLM fails"""
+        destination = context.get("destination", "Unknown")
+        num_days = context.get("num_days", 5)
+
+        # Get activities
+        activities = []
+        for item in context.get("research", []):
+            if item.get("type") == "activities":
+                activities = item.get("activities", [])
+
+        # Simple day generation
         days = []
-        activity_index = 0
-        food_index = 0
-
+        act_idx = 0
         for day_num in range(1, num_days + 1):
-            day_activities = []
-
-            # Assign 2-3 activities per day based on preferences
-            max_activities = self._get_max_activities_per_day(constraints)
-            for _ in range(max_activities):
-                if activity_index < len(activities):
-                    day_activities.append(activities[activity_index])
-                    activity_index += 1
-
-            day_plan = {
+            day = {
                 "day": day_num,
                 "date": f"Day {day_num}",
-                "theme": self._get_day_theme(day_num, num_days, day_activities),
-                "schedule": []
+                "theme": f"Day {day_num} in {destination}",
+                "schedule": [],
+                "day_cost": 0
             }
 
-            # Morning activity
-            if day_activities:
-                morning_act = day_activities[0]
-                day_plan["schedule"].append({
-                    "time": "09:00 - 12:00",
-                    "activity": morning_act.get("name", "Morning exploration"),
-                    "location": morning_act.get("location", destination),
-                    "category": morning_act.get("category", "Sightseeing"),
-                    "notes": self._get_activity_notes(morning_act),
-                    "cost": morning_act.get("price", 0),
-                    "source_url": morning_act.get("source_url")
-                })
+            # Add activities
+            for _ in range(2):
+                if act_idx < len(activities):
+                    act = activities[act_idx]
+                    day["schedule"].append({
+                        "time": "See activity details",
+                        "activity": act.get("name", "Activity"),
+                        "location": act.get("location", destination),
+                        "category": act.get("category", "Sightseeing"),
+                        "notes": "",
+                        "cost": act.get("price", 0)
+                    })
+                    day["day_cost"] += act.get("price", 0)
+                    act_idx += 1
 
-            # Lunch - use food activities or destination-specific recommendations
-            lunch_info = self._get_meal_recommendation(
-                food_activities, food_index, destination, "lunch", destination_info
-            )
-            day_plan["schedule"].append({
-                "time": "12:00 - 13:30",
-                "activity": lunch_info["name"],
-                "location": lunch_info["location"],
-                "category": "Food",
-                "notes": lunch_info["notes"],
-                "cost": lunch_info["cost"],
-                "source_url": lunch_info.get("source_url")
-            })
-            if lunch_info.get("from_food_activities"):
-                food_index += 1
-
-            # Afternoon activity
-            if len(day_activities) > 1:
-                afternoon_act = day_activities[1]
-                day_plan["schedule"].append({
-                    "time": "14:00 - 17:00",
-                    "activity": afternoon_act.get("name", "Afternoon exploration"),
-                    "location": afternoon_act.get("location", destination),
-                    "category": afternoon_act.get("category", "Sightseeing"),
-                    "notes": self._get_activity_notes(afternoon_act),
-                    "cost": afternoon_act.get("price", 0),
-                    "source_url": afternoon_act.get("source_url")
-                })
-
-            # Optional late afternoon activity
-            if len(day_activities) > 2:
-                late_act = day_activities[2]
-                day_plan["schedule"].append({
-                    "time": "17:30 - 19:00",
-                    "activity": late_act.get("name", "Evening activity"),
-                    "location": late_act.get("location", destination),
-                    "category": late_act.get("category", "Sightseeing"),
-                    "notes": self._get_activity_notes(late_act),
-                    "cost": late_act.get("price", 0),
-                    "source_url": late_act.get("source_url")
-                })
-
-            # Dinner - use food activities or destination-specific recommendations
-            dinner_info = self._get_meal_recommendation(
-                food_activities, food_index, destination, "dinner", destination_info
-            )
-            day_plan["schedule"].append({
-                "time": "19:00 - 21:00",
-                "activity": dinner_info["name"],
-                "location": dinner_info["location"],
-                "category": "Food",
-                "notes": dinner_info["notes"],
-                "cost": dinner_info["cost"],
-                "source_url": dinner_info.get("source_url")
-            })
-            if dinner_info.get("from_food_activities"):
-                food_index += 1
-
-            # Calculate day total
-            day_plan["day_cost"] = sum(
-                item.get("cost", 0) for item in day_plan["schedule"]
-            )
-
-            days.append(day_plan)
-
-        # Calculate total cost using actual data
-        total_cost = self._calculate_total_cost(
-            flights, hotels, all_activities, num_days, cost_analysis
-        )
-
-        # Important notes - dynamic based on context
-        notes = self._generate_important_notes(
-            destination, destination_info, weather, constraints
-        )
-
-        # Packing list - from weather + destination
-        final_packing = self._generate_packing_list(packing, weather, destination_info)
-
-        # Format flight info for output
-        flight_info = self._format_flight_info(flights)
-
-        # Format accommodation info for output
-        accommodation_info = self._format_accommodation_info(hotels)
+            days.append(day)
 
         return ItineraryResult(
             destination=destination,
-            travel_dates=travel_dates,
+            travel_dates=context.get("travel_dates", ""),
             days=days,
-            total_estimated_cost=total_cost,
+            total_estimated_cost=sum(d.get("day_cost", 0) for d in days),
             currency="USD",
-            summary=self._generate_summary_text(destination, num_days, all_activities, total_cost),
-            packing_list=final_packing,
-            important_notes=notes,
-            flights=flight_info,
-            accommodation=accommodation_info
-        )
-
-    def _format_flight_info(self, flights: Dict) -> Optional[Dict[str, Any]]:
-        """Format flight information for output"""
-        if not flights:
-            return None
-
-        result = {
-            "outbound": None,
-            "return": None,
-            "total_flight_cost": 0
-        }
-
-        # Get best outbound flight
-        best_out = flights.get("best_outbound")
-        if best_out:
-            result["outbound"] = {
-                "airline": best_out.get("airline", "Unknown"),
-                "price": best_out.get("price", 0),
-                "departure_time": best_out.get("departure_time", "TBD"),
-                "arrival_time": best_out.get("arrival_time", "TBD"),
-                "duration": best_out.get("duration", "Unknown"),
-                "stops": best_out.get("stops", 0),
-                "booking_url": best_out.get("booking_url")
-            }
-            result["total_flight_cost"] += best_out.get("price", 0)
-        elif flights.get("outbound_flights"):
-            # Use first option if no best selected
-            first = flights["outbound_flights"][0]
-            result["outbound"] = {
-                "airline": first.get("airline", "Unknown"),
-                "price": first.get("price", 0),
-                "departure_time": first.get("departure_time", "TBD"),
-                "arrival_time": first.get("arrival_time", "TBD"),
-                "duration": first.get("duration", "Unknown"),
-                "stops": first.get("stops", 0),
-                "booking_url": first.get("booking_url")
-            }
-            result["total_flight_cost"] += first.get("price", 0)
-
-        # Get best return flight
-        best_ret = flights.get("best_return")
-        if best_ret:
-            result["return"] = {
-                "airline": best_ret.get("airline", "Unknown"),
-                "price": best_ret.get("price", 0),
-                "departure_time": best_ret.get("departure_time", "TBD"),
-                "arrival_time": best_ret.get("arrival_time", "TBD"),
-                "duration": best_ret.get("duration", "Unknown"),
-                "stops": best_ret.get("stops", 0),
-                "booking_url": best_ret.get("booking_url")
-            }
-            result["total_flight_cost"] += best_ret.get("price", 0)
-        elif flights.get("return_flights"):
-            # Use first option if no best selected
-            first = flights["return_flights"][0]
-            result["return"] = {
-                "airline": first.get("airline", "Unknown"),
-                "price": first.get("price", 0),
-                "departure_time": first.get("departure_time", "TBD"),
-                "arrival_time": first.get("arrival_time", "TBD"),
-                "duration": first.get("duration", "Unknown"),
-                "stops": first.get("stops", 0),
-                "booking_url": first.get("booking_url")
-            }
-            result["total_flight_cost"] += first.get("price", 0)
-
-        # Include all options for reference
-        result["all_outbound_options"] = flights.get("outbound_flights", [])[:5]
-        result["all_return_options"] = flights.get("return_flights", [])[:5]
-
-        return result
-
-    def _format_accommodation_info(self, hotels: Dict) -> Optional[Dict[str, Any]]:
-        """Format accommodation information for output"""
-        if not hotels:
-            return None
-
-        result = {
-            "recommended": None,
-            "all_options": [],
-            "filters_applied": hotels.get("filters_applied", {})
-        }
-
-        # Get best value or highest rated
-        best = hotels.get("best_value") or hotels.get("highest_rated")
-        if best:
-            result["recommended"] = {
-                "name": best.get("name", "Unknown"),
-                "location": best.get("location", ""),
-                "price_per_night": best.get("price_per_night", 0),
-                "rating": best.get("rating", 0),
-                "amenities": best.get("amenities", []),
-                "distance_to_center": best.get("distance_to_center", ""),
-                "near_transport": best.get("near_transport", False),
-                "booking_url": best.get("booking_url"),
-                "description": best.get("description", "")
-            }
-
-        # Include all options
-        result["all_options"] = hotels.get("hotels", [])[:8]
-        result["total_options"] = hotels.get("total_options", len(result["all_options"]))
-
-        return result
-
-    def _get_max_activities_per_day(self, constraints: Dict) -> int:
-        """Get max activities per day from preferences"""
-        preferences = constraints.get("preferences", [])
-        for pref in preferences:
-            if "no more than" in pref.lower() and "activities" in pref.lower():
-                # Extract number
-                import re
-                match = re.search(r'(\d+)', pref)
-                if match:
-                    return int(match.group(1))
-        return 2  # Default
-
-    def _get_activity_notes(self, activity: Dict) -> str:
-        """Get notes for an activity"""
-        tips = activity.get("tips", [])
-        if tips and isinstance(tips, list):
-            return tips[0] if tips else "Enjoy!"
-        return str(tips) if tips else "Enjoy!"
-
-    def _get_meal_recommendation(
-        self,
-        food_activities: List[Dict],
-        food_index: int,
-        destination: str,
-        meal_type: str,
-        destination_info: Dict
-    ) -> Dict[str, Any]:
-        """Get meal recommendation from context or generate based on destination"""
-
-        # Try to use a food activity
-        if food_index < len(food_activities):
-            food_act = food_activities[food_index]
-            return {
-                "name": food_act.get("name", f"Local {meal_type}"),
-                "location": food_act.get("location", destination),
-                "notes": self._get_activity_notes(food_act),
-                "cost": food_act.get("price", 20 if meal_type == "lunch" else 30),
-                "source_url": food_act.get("source_url"),
-                "from_food_activities": True
-            }
-
-        # Generate destination-specific recommendation
-        local_cuisine = destination_info.get("local_cuisine", [])
-        cuisine_tip = local_cuisine[0] if local_cuisine else f"local {destination} cuisine"
-
-        # Destination-specific meal costs (estimates based on region)
-        meal_costs = self._estimate_meal_cost(destination, meal_type)
-
-        if meal_type == "lunch":
-            return {
-                "name": f"Lunch - Try {cuisine_tip}",
-                "location": f"Local restaurant in {destination}",
-                "notes": f"Explore local lunch spots, try {cuisine_tip}",
-                "cost": meal_costs,
-                "from_food_activities": False
-            }
-        else:
-            return {
-                "name": f"Dinner - {destination} dining experience",
-                "location": f"Restaurant district, {destination}",
-                "notes": f"Experience local dinner culture, consider {cuisine_tip}",
-                "cost": meal_costs,
-                "from_food_activities": False
-            }
-
-    def _estimate_meal_cost(self, destination: str, meal_type: str) -> float:
-        """Estimate meal cost based on destination"""
-        dest_lower = destination.lower()
-
-        # Regional cost estimates (USD)
-        expensive_cities = ["tokyo", "singapore", "hong kong", "london", "paris", "new york", "zurich"]
-        moderate_cities = ["bangkok", "seoul", "taipei", "osaka", "berlin", "barcelona"]
-        budget_cities = ["hanoi", "bali", "kuala lumpur", "manila", "jakarta"]
-
-        if any(city in dest_lower for city in expensive_cities):
-            return 20 if meal_type == "lunch" else 40
-        elif any(city in dest_lower for city in moderate_cities):
-            return 12 if meal_type == "lunch" else 25
-        elif any(city in dest_lower for city in budget_cities):
-            return 8 if meal_type == "lunch" else 15
-        else:
-            return 15 if meal_type == "lunch" else 30  # Default
-
-    def _get_day_theme(self, day_num: int, total_days: int, day_activities: List) -> str:
-        """Get theme for the day based on activities"""
-        if day_num == 1:
-            return "Arrival & Orientation"
-        elif day_num == total_days:
-            return "Final Exploration & Departure"
-
-        # Determine theme from activities
-        if day_activities:
-            categories = [a.get("category", "").lower() for a in day_activities]
-            if "cultural" in categories or "museum" in categories:
-                return "Cultural Immersion"
-            elif "nature" in categories or "adventure" in categories:
-                return "Nature & Adventure"
-            elif "shopping" in categories:
-                return "Shopping & Local Life"
-            elif "food" in categories:
-                return "Culinary Exploration"
-
-        return f"Day {day_num} Exploration"
-
-    def _get_cost_analysis(self, context: Dict) -> Dict:
-        """Extract cost analysis from context"""
-        for item in context.get("analysis", []):
-            if item.get("type") == "cost":
-                return item
-        return {}
-
-    def _calculate_total_cost(
-        self,
-        flights: Dict,
-        hotels: Dict,
-        activities: List,
-        num_days: int,
-        cost_analysis: Dict
-    ) -> float:
-        """Calculate total trip cost from actual data"""
-        cost = 0
-
-        # Use cost analysis if available
-        if cost_analysis.get("total_estimated"):
-            return cost_analysis.get("total_estimated", 0)
-
-        # Flights - use actual prices
-        if flights:
-            best_out = flights.get("best_outbound", {})
-            best_ret = flights.get("best_return", {})
-            cost += best_out.get("price", 0)
-            cost += best_ret.get("price", 0)
-
-            # If no best flights, estimate from options
-            if cost == 0:
-                outbound = flights.get("outbound_flights", [])
-                return_flights = flights.get("return_flights", [])
-                if outbound:
-                    cost += outbound[0].get("price", 0)
-                if return_flights:
-                    cost += return_flights[0].get("price", 0)
-
-        # Hotels - use actual prices
-        if hotels:
-            best_hotel = hotels.get("best_value") or hotels.get("highest_rated", {})
-            per_night = best_hotel.get("price_per_night", 0)
-            if per_night > 0:
-                cost += per_night * (num_days - 1)
-            else:
-                # Estimate from hotel list
-                hotel_list = hotels.get("hotels", [])
-                if hotel_list:
-                    avg_price = sum(h.get("price_per_night", 0) for h in hotel_list) / len(hotel_list)
-                    cost += avg_price * (num_days - 1)
-
-        # Activities - sum actual prices
-        activity_cost = sum(a.get("price", 0) for a in activities)
-        cost += activity_cost
-
-        # Food & local transport - estimate based on destination
-        daily_misc = self._estimate_daily_misc_cost(activities)
-        cost += daily_misc * num_days
-
-        return round(cost, 2)
-
-    def _estimate_daily_misc_cost(self, activities: List) -> float:
-        """Estimate daily food and transport cost"""
-        # Calculate average activity price to gauge destination cost level
-        if activities:
-            avg_activity = sum(a.get("price", 0) for a in activities) / len(activities)
-            if avg_activity > 50:
-                return 80  # Expensive destination
-            elif avg_activity > 20:
-                return 50  # Moderate destination
-            else:
-                return 35  # Budget destination
-        return 50  # Default
-
-    def _generate_important_notes(
-        self,
-        destination: str,
-        destination_info: Dict,
-        weather: Dict,
-        constraints: Dict
-    ) -> List[str]:
-        """Generate important notes based on context"""
-        notes = []
-
-        # Visa/entry requirements
-        visa_info = destination_info.get("visa_requirements", "")
-        if visa_info:
-            notes.append(f"Visa: {visa_info}")
-
-        # Weather-specific
-        if weather:
-            rain_chance = weather.get("summary", {}).get("average_rain_chance", 0)
-            if rain_chance > 40:
-                notes.append("Rain likely - pack umbrella and waterproof jacket")
-
-            avg_temp = weather.get("summary", {}).get("average_temp")
-            if avg_temp:
-                if avg_temp > 30:
-                    notes.append("Hot weather expected - stay hydrated, avoid midday sun")
-                elif avg_temp < 10:
-                    notes.append("Cold weather - pack warm layers")
-
-        # Constraint-specific
-        hard_constraints = constraints.get("hard_constraints", [])
-        for constraint in hard_constraints:
-            notes.append(f"Important: {constraint}")
-
-        # General travel tips
-        notes.extend([
-            "Download offline maps before departure",
-            "Keep digital copies of important documents",
-            "Notify bank of travel dates"
-        ])
-
-        return notes[:8]  # Limit to 8 notes
-
-    def _generate_packing_list(
-        self,
-        weather_packing: List[str],
-        weather: Dict,
-        destination_info: Dict
-    ) -> List[str]:
-        """Generate comprehensive packing list"""
-        packing = set(weather_packing) if weather_packing else set()
-
-        # Essentials
-        packing.update([
-            "Passport and copies",
-            "Comfortable walking shoes",
-            "Phone charger and adapter"
-        ])
-
-        # Weather-based
-        if weather:
-            avg_temp = weather.get("summary", {}).get("average_temp", 20)
-            if avg_temp > 25:
-                packing.update(["Sunscreen", "Sunglasses", "Light breathable clothing"])
-            elif avg_temp < 15:
-                packing.update(["Warm jacket", "Layers", "Scarf"])
-
-            if weather.get("summary", {}).get("average_rain_chance", 0) > 30:
-                packing.add("Umbrella or rain jacket")
-
-        # Destination-specific
-        culture_tips = destination_info.get("culture_tips", [])
-        if any("temple" in tip.lower() or "modest" in tip.lower() for tip in culture_tips):
-            packing.add("Modest clothing for temples/religious sites")
-
-        return list(packing)[:15]  # Limit to 15 items
-
-    def _generate_summary_text(
-        self,
-        destination: str,
-        num_days: int,
-        activities: List,
-        total_cost: float
-    ) -> str:
-        """Generate summary text"""
-        activity_count = len(activities)
-        categories = list(set(a.get("category", "Various") for a in activities))[:3]
-        cat_text = ", ".join(categories) if categories else "various"
-
-        return (
-            f"{num_days}-day trip to {destination} featuring {activity_count} planned activities "
-            f"including {cat_text}. Estimated total cost: ${total_cost:.0f} USD."
+            summary=f"{num_days}-day trip to {destination}",
+            packing_list=["Passport", "Comfortable shoes", "Phone charger"],
+            important_notes=["Check visa requirements", "Book accommodations in advance"],
+            flights=self._extract_flights(context),
+            accommodation=self._extract_hotels(context)
         )
 
     def generate_summary(
@@ -647,92 +419,51 @@ class ItineraryAgent:
         days = itinerary.get("days", [])
         total_cost = itinerary.get("total_estimated_cost", 0)
 
-        # Extract highlights from actual activities
+        # Extract highlights from activities
         highlights = []
         for day in days:
             for item in day.get("schedule", []):
-                if item.get("category") not in ["Food"]:
+                if item.get("category") not in ["Food", "Meal"]:
                     highlights.append(f"Day {day['day']}: {item['activity']}")
 
         # Get cost breakdown from analysis
-        cost_breakdown = self._get_cost_breakdown(context, total_cost)
+        cost_breakdown = {}
+        for item in context.get("analysis", []):
+            if item.get("type") == "cost" and item.get("breakdown"):
+                cost_breakdown = item.get("breakdown")
+                break
 
-        # Budget summary with actual breakdown
+        # Budget summary
         budget_summary = {
             "total_estimated": total_cost,
             "currency": "USD",
             "breakdown": cost_breakdown
         }
 
-        # Key bookings from actual research
-        bookings = self._get_key_bookings(context)
-
-        # Destination-specific checklist
-        checklist = self._get_preparation_checklist(context, destination)
-
-        return SummaryResult(
-            trip_overview=f"A {len(days)}-day adventure to {destination} featuring cultural experiences, local cuisine, and memorable sightseeing.",
-            highlights=highlights[:5],
-            budget_summary=budget_summary,
-            key_bookings=bookings,
-            preparation_checklist=checklist
-        )
-
-    def _get_cost_breakdown(self, context: Dict, total: float) -> Dict:
-        """Get cost breakdown from context or estimate"""
-        for item in context.get("analysis", []):
-            if item.get("type") == "cost" and item.get("breakdown"):
-                return item.get("breakdown")
-
-        # Estimate breakdown
-        return {
-            "flights": f"~${total * 0.30:.0f}",
-            "accommodation": f"~${total * 0.25:.0f}",
-            "activities": f"~${total * 0.15:.0f}",
-            "food": f"~${total * 0.20:.0f}",
-            "transport_misc": f"~${total * 0.10:.0f}"
-        }
-
-    def _get_key_bookings(self, context: Dict) -> List[Dict]:
-        """Get key bookings needed"""
+        # Key bookings from research
         bookings = []
-
-        # Check for flight info
         for item in context.get("research", []):
             if item.get("type") == "flights":
                 best = item.get("best_outbound", {})
-                bookings.append({
-                    "type": "Flight",
-                    "details": f"{best.get('airline', 'TBD')} - ${best.get('price', 'TBD')}",
-                    "status": "Book in advance",
-                    "priority": "High"
-                })
+                if best:
+                    bookings.append({
+                        "type": "Flight",
+                        "details": f"{best.get('airline', 'TBD')} - ${best.get('price', 'TBD')}",
+                        "status": "Book in advance",
+                        "priority": "High"
+                    })
             if item.get("type") == "accommodations":
                 best = item.get("best_value") or item.get("highest_rated", {})
-                bookings.append({
-                    "type": "Hotel",
-                    "details": f"{best.get('name', 'TBD')} - ${best.get('price_per_night', 'TBD')}/night",
-                    "status": "Book in advance",
-                    "priority": "High"
-                })
+                if best:
+                    bookings.append({
+                        "type": "Hotel",
+                        "details": f"{best.get('name', 'TBD')} - ${best.get('price_per_night', 'TBD')}/night",
+                        "status": "Book in advance",
+                        "priority": "High"
+                    })
 
-        # Add activity bookings
-        bookings.append({
-            "type": "Popular attractions",
-            "details": "Check ticket availability",
-            "status": "Book 1-2 weeks ahead",
-            "priority": "Medium"
-        })
-
-        return bookings
-
-    def _get_preparation_checklist(self, context: Dict, destination: str) -> List[str]:
-        """Generate preparation checklist based on destination"""
-        checklist = [
-            "Check passport validity (6+ months required)",
-        ]
-
-        # Add visa check from destination info
+        # Checklist from destination info
+        checklist = ["Check passport validity"]
         for item in context.get("research", []):
             if item.get("type") == "destination":
                 visa = item.get("visa_requirements", "")
@@ -744,13 +475,13 @@ class ItineraryAgent:
             "Book flights",
             "Book accommodation",
             "Get travel insurance",
-            "Notify bank of travel dates",
-            "Download offline maps and translation app",
-            "Research local customs and etiquette",
-            "Check weather forecast closer to date",
-            "Pack according to packing list",
-            "Print/save important confirmations",
-            "Arrange airport transportation"
+            "Notify bank of travel dates"
         ])
 
-        return checklist
+        return SummaryResult(
+            trip_overview=f"A {len(days)}-day adventure to {destination}",
+            highlights=highlights[:5],
+            budget_summary=budget_summary,
+            key_bookings=bookings,
+            preparation_checklist=checklist
+        )
