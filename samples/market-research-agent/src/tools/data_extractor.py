@@ -22,6 +22,9 @@ class DataExtractor:
     Extracts structured data from web pages and text
     """
 
+    # In-memory cache for URL extractions (shared across instances)
+    _url_cache: Dict[str, Dict[str, Any]] = {}
+
     def __init__(self):
         self.session = requests.Session() if BS4_AVAILABLE else None
         self.session.headers.update({
@@ -38,9 +41,16 @@ class DataExtractor:
         Returns:
             Dictionary with extracted data
         """
+        # Check cache first
+        if url in DataExtractor._url_cache:
+            print(f"Cache hit for URL: {url}")
+            return DataExtractor._url_cache[url]
+
         if not BS4_AVAILABLE:
             print("BeautifulSoup not available, returning mock data")
-            return self._mock_url_data(url)
+            result = self._mock_url_data(url)
+            DataExtractor._url_cache[url] = result
+            return result
 
         try:
             print(f"Extracting data from: {url}")
@@ -55,7 +65,7 @@ class DataExtractor:
             description = self._extract_description(soup)
             text = self._extract_text(soup)
 
-            return {
+            result = {
                 "url": url,
                 "title": title,
                 "description": description,
@@ -64,9 +74,15 @@ class DataExtractor:
                 "domain": urlparse(url).netloc
             }
 
+            # Store in cache
+            DataExtractor._url_cache[url] = result
+            return result
+
         except Exception as e:
             print(f"Failed to extract from {url}: {str(e)}")
-            return self._mock_url_data(url)
+            result = self._mock_url_data(url)
+            DataExtractor._url_cache[url] = result
+            return result
 
     def extract_company_info(self, text: str) -> Dict[str, Any]:
         """

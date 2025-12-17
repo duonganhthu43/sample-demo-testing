@@ -37,6 +37,9 @@ class WebSearchTool:
     Web search tool that supports multiple search providers
     """
 
+    # In-memory cache for search results (shared across instances)
+    _search_cache: Dict[tuple, List["SearchResult"]] = {}
+
     def __init__(self, provider: Optional[str] = None):
         self.config = get_config()
         self.provider = provider or self.config.search.provider
@@ -52,28 +55,38 @@ class WebSearchTool:
 
         print(f"Initialized WebSearchTool with provider: {self.provider}, mock_mode: {self.mock_mode}")
 
-    def search(self, query: str, num_results: int = 10) -> List[SearchResult]:
+    def search(self, query: str, num_results: int = 10, deep: bool = False) -> List[SearchResult]:
         """
         Perform web search
 
         Args:
             query: Search query string
             num_results: Number of results to return
+            deep: Use advanced/deep search (slower but more thorough)
 
         Returns:
             List of SearchResult objects
         """
-        print(f"Searching: '{query}' (limit: {num_results})")
+        # Check cache first
+        cache_key = (query, num_results, deep)
+        if cache_key in WebSearchTool._search_cache:
+            print(f"Cache hit for: '{query}' (limit: {num_results}, deep: {deep})")
+            return WebSearchTool._search_cache[cache_key]
+
+        print(f"Searching: '{query}' (limit: {num_results}, deep: {deep})")
 
         if self.mock_mode:
-            return self._mock_search(query, num_results)
-
-        if self.provider == "serpapi":
-            return self._search_serpapi(query, num_results)
+            results = self._mock_search(query, num_results)
+        elif self.provider == "serpapi":
+            results = self._search_serpapi(query, num_results)
         elif self.provider == "tavily":
-            return self._search_tavily(query, num_results)
+            results = self._search_tavily(query, num_results, deep)
         else:
             raise ValueError(f"Unsupported search provider: {self.provider}")
+
+        # Store in cache
+        WebSearchTool._search_cache[cache_key] = results
+        return results
 
     def _search_serpapi(self, query: str, num_results: int) -> List[SearchResult]:
         """Search using SerpAPI (Google Search)"""
@@ -108,17 +121,18 @@ class WebSearchTool:
             print(f"SerpAPI search failed: {str(e)}")
             return self._mock_search(query, num_results)
 
-    def _search_tavily(self, query: str, num_results: int) -> List[SearchResult]:
+    def _search_tavily(self, query: str, num_results: int, deep: bool = False) -> List[SearchResult]:
         """Search using Tavily API"""
         try:
             from tavily import TavilyClient
 
             client = TavilyClient(api_key=self.config.search.tavily_api_key)
+            search_depth = "advanced" if deep else "basic"
 
             response = client.search(
                 query=query,
                 max_results=num_results,
-                search_depth="advanced"
+                search_depth=search_depth
             )
 
             search_results = []
@@ -287,16 +301,17 @@ class WebSearchTool:
 
 
 # Convenience function
-def search_web(query: str, num_results: int = 10) -> List[SearchResult]:
+def search_web(query: str, num_results: int = 10, deep: bool = False) -> List[SearchResult]:
     """
     Convenience function to perform web search
 
     Args:
         query: Search query
         num_results: Number of results
+        deep: Use advanced/deep search (slower but more thorough)
 
     Returns:
         List of SearchResult objects
     """
     tool = WebSearchTool()
-    return tool.search(query, num_results)
+    return tool.search(query, num_results, deep)
