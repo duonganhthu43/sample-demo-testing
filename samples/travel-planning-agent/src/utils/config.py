@@ -31,6 +31,13 @@ class LLMConfig(BaseSettings):
         env_file = ".env"
         extra = "allow"
 
+    @property
+    def model(self) -> str:
+        """Get the model name based on provider"""
+        if self.provider == "anthropic":
+            return self.anthropic_model
+        return self.openai_model
+
 
 class SearchConfig(BaseSettings):
     """Search API Configuration"""
