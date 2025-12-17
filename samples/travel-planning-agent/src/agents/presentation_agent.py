@@ -40,16 +40,20 @@ Create a well-structured markdown document with:
    - Use a clean markdown table format
 
 3. **Flight Details Section**
-   - Outbound and return flights in separate subsections
-   - Use tables showing: Airline, Price, Departure, Arrival, Duration, Stops
-   - Include total flight cost
-   - Add collapsible section with alternative flight options if available
+   - Separate subsections for Outbound and Return flights
+   - Show ALL flight options in comparison tables with columns:
+     | Airline | Route | Departure | Arrival | Duration | Stops | Price |
+   - Mark the recommended/selected option with ✅ or "**Selected**"
+   - Include total flight cost (outbound + return)
+   - Add a brief note explaining why the selected flights were chosen
 
 4. **Accommodation Section**
-   - Recommended hotel with name (linked if URL available)
-   - Table with: Location, Price/night, Rating (use ⭐ stars), Near Transport, Distance
-   - List amenities
-   - Add collapsible section with other hotel options
+   - Show ALL hotel options in a comparison table with columns:
+     | Hotel | Location | Price/Night | Total | Rating | Near Transport | Amenities |
+   - Use ⭐ stars for ratings (e.g., ⭐⭐⭐⭐)
+   - Mark the recommended option with ✅ or "**Recommended**"
+   - Link hotel names if URLs are available: [Hotel Name](url)
+   - Add a brief note explaining why the recommended hotel was chosen
 
 5. **Day-by-Day Itinerary**
    - Each day as a subsection with day number and theme
@@ -115,6 +119,10 @@ class PresentationAgent:
         """
         print("Formatting itinerary with LLM...")
 
+        # Ensure inputs are dicts, not None
+        itinerary = itinerary or {}
+        context = context or {}
+
         # Prepare the data for the LLM
         data_summary = self._prepare_data_summary(itinerary, context)
 
@@ -157,6 +165,10 @@ class PresentationAgent:
         context: Dict[str, Any]
     ) -> str:
         """Prepare a structured summary of all data for the LLM"""
+
+        # Ensure inputs are dicts, not None
+        itinerary = itinerary or {}
+        context = context or {}
 
         sections = []
 
@@ -247,22 +259,25 @@ class PresentationAgent:
 
     def _get_from_research(self, context: Dict, type_name: str) -> Dict:
         """Get item from research by type"""
-        for item in context.get("research", []):
-            if item.get("type") == type_name:
+        context = context or {}
+        for item in context.get("research") or []:
+            if isinstance(item, dict) and item.get("type") == type_name:
                 return item
         return {}
 
     def _get_from_analysis(self, context: Dict, type_name: str) -> Dict:
         """Get item from analysis by type"""
-        for item in context.get("analysis", []):
-            if item.get("type") == type_name:
+        context = context or {}
+        for item in context.get("analysis") or []:
+            if isinstance(item, dict) and item.get("type") == type_name:
                 return item
         return {}
 
     def _get_from_specialized(self, context: Dict, type_name: str) -> Dict:
         """Get item from specialized by type"""
-        for item in context.get("specialized", []):
-            if item.get("type") == type_name:
+        context = context or {}
+        for item in context.get("specialized") or []:
+            if isinstance(item, dict) and item.get("type") == type_name:
                 return item
         return {}
 
@@ -272,6 +287,10 @@ class PresentationAgent:
         context: Dict[str, Any]
     ) -> str:
         """Basic fallback formatting if LLM fails"""
+        # Ensure inputs are dicts, not None
+        itinerary = itinerary or {}
+        context = context or {}
+
         destination = itinerary.get('destination', 'Unknown')
         dates = itinerary.get('travel_dates', '')
         total_cost = itinerary.get('total_estimated_cost', 0)

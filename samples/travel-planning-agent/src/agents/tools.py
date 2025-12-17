@@ -182,34 +182,6 @@ TOOL_DEFINITIONS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "analyze_schedule_optimization",
-            "description": "Optimize the activity schedule to minimize travel time and maximize experiences",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "activities": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "List of planned activities"
-                    },
-                    "preferences": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "User preferences for scheduling"
-                    },
-                    "num_days": {
-                        "type": "integer",
-                        "description": "Number of days available"
-                    }
-                },
-                "required": ["activities", "num_days"]
-            }
-        }
-    },
-
     # Specialized Tools
     {
         "type": "function",
@@ -424,7 +396,7 @@ class ToolExecutor:
     def _get_presentation_agent(self):
         if self._presentation_agent is None:
             from .presentation_agent import PresentationAgent
-            self._presentation_agent = PresentationAgent()
+            self._presentation_agent = PresentationAgent(self.config)
         return self._presentation_agent
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -438,7 +410,7 @@ class ToolExecutor:
         Returns:
             Dictionary with tool result
         """
-        print(f"Executing tool: {tool_name}")
+        print(f"\n>>> Executing tool: {tool_name} with args: {list(arguments.keys())}")
 
         try:
             # Research Tools
@@ -504,21 +476,21 @@ class ToolExecutor:
                 self.context["analysis"].append({"type": "cost", **result.to_dict()})
                 return {"success": True, "result": result.to_dict()}
 
-            elif tool_name == "analyze_schedule_optimization":
-                agent = self._get_analysis_agent()
-                activities = arguments.get("activities", self._get_activities_from_context())
-                result = agent.analyze_schedule_optimization(
-                    activities=activities,
-                    preferences=arguments.get("preferences", []),
-                    num_days=arguments.get("num_days", self.context.get("num_days", 5))
-                )
-                self.context["analysis"].append({"type": "schedule", **result.to_dict()})
-                return {"success": True, "result": result.to_dict()}
-
             # Specialized Tools
             elif tool_name == "optimize_budget":
                 agent = self._get_budget_agent()
-                result = agent.optimize_budget(**arguments)
+                # Build current_selections from context if not provided
+                current_selections = arguments.get("current_selections", {
+                    "flights": self._get_flights_from_context(),
+                    "hotels": self._get_hotels_from_context(),
+                    "activities": self._get_activities_from_context(),
+                    "num_days": self.context.get("num_days", 5)
+                })
+                result = agent.optimize_budget(
+                    current_selections=current_selections,
+                    budget_limit=arguments.get("budget_limit", 1500),
+                    priorities=arguments.get("priorities")
+                )
                 self.context["specialized"].append({"type": "budget", **result.to_dict()})
                 return {"success": True, "result": result.to_dict()}
 
@@ -550,13 +522,15 @@ class ToolExecutor:
 
             elif tool_name == "generate_summary":
                 agent = self._get_itinerary_agent()
-                itinerary = self.context.get("itinerary", {})
+                # Ensure itinerary is a dict, not None
+                itinerary = self.context.get("itinerary") or {}
                 result = agent.generate_summary(itinerary, self.context)
                 return {"success": True, "result": result.to_dict()}
 
             elif tool_name == "format_presentation":
                 agent = self._get_presentation_agent()
-                itinerary = self.context.get("itinerary", {})
+                # Ensure itinerary is a dict, not None
+                itinerary = self.context.get("itinerary") or {}
                 result = agent.format_itinerary(itinerary, self.context)
                 self.context["presentation"] = result.to_dict()
                 return {"success": True, "result": result.to_dict()}

@@ -221,8 +221,10 @@ class ResearchAgent:
 
             # Use LLM to extract structured info from all content
             if all_content:
+                print(f"  Tavily returned {len(all_content)} content items, extracting with LLM...")
                 extracted = self._extract_with_llm(destination, all_content)
             else:
+                print("  No content from Tavily, using default values")
                 extracted = {}
 
             return DestinationResult(

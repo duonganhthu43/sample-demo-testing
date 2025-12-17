@@ -109,11 +109,18 @@ class TravelPlanningOrchestrator:
             print(f"\n--- Iteration {iteration} ---")
 
             try:
+                # Force tool calling on early iterations to ensure research happens
+                # Switch to "auto" after we have enough data (iteration > 8)
+                # or when presentation is done (final output)
+                has_presentation = self.tool_executor.context.get("presentation") is not None
+                current_tool_choice = "auto" if (iteration > 8 or has_presentation) else "required"
+                print(f"  tool_choice: {current_tool_choice}")
+
                 # Call LLM with tools
                 response = llm_client.chat.completions.create(
                     messages=messages,
                     tools=TOOL_DEFINITIONS,
-                    tool_choice="auto",
+                    tool_choice=current_tool_choice,
                     **llm_params
                 )
 

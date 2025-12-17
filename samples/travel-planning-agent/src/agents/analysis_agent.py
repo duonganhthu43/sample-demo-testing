@@ -224,6 +224,8 @@ class AnalysisAgent:
             FeasibilityResult with analysis
         """
         print("Analyzing itinerary feasibility with LLM...")
+        print(f"  Using base_url: {self.config.llm.base_url}")
+        print(f"  Using model: {self.config.llm.model}")
 
         # Prepare context for LLM
         context = self._prepare_feasibility_context(itinerary, constraints)
