@@ -451,7 +451,20 @@ class ToolExecutor:
             # Analysis Tools
             elif tool_name == "analyze_itinerary_feasibility":
                 agent = self._get_analysis_agent()
-                result = agent.analyze_itinerary_feasibility(**arguments)
+                # Build itinerary from context if not provided
+                itinerary = arguments.get("itinerary", {
+                    "total_days": self.context.get("num_days", 5),
+                    "activities_per_day": 2,
+                    "flights": self._get_flights_from_context(),
+                    "hotels": self._get_hotels_from_context(),
+                    "activities": self._get_activities_from_context()
+                })
+                # Get constraints from context if not provided
+                constraints = arguments.get("constraints", self.context.get("constraints", {}))
+                result = agent.analyze_itinerary_feasibility(
+                    itinerary=itinerary,
+                    constraints=constraints
+                )
                 self.context["analysis"].append({"type": "feasibility", **result.to_dict()})
                 return {"success": True, "result": result.to_dict()}
 

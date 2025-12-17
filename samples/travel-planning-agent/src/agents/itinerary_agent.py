@@ -22,11 +22,15 @@ class ItineraryResult:
     summary: str
     packing_list: List[str]
     important_notes: List[str]
+    flights: Optional[Dict[str, Any]] = None
+    accommodation: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "destination": self.destination,
             "travel_dates": self.travel_dates,
+            "flights": self.flights,
+            "accommodation": self.accommodation,
             "days": self.days,
             "total_estimated_cost": self.total_estimated_cost,
             "currency": self.currency,
@@ -229,6 +233,12 @@ class ItineraryAgent:
         # Packing list - from weather + destination
         final_packing = self._generate_packing_list(packing, weather, destination_info)
 
+        # Format flight info for output
+        flight_info = self._format_flight_info(flights)
+
+        # Format accommodation info for output
+        accommodation_info = self._format_accommodation_info(hotels)
+
         return ItineraryResult(
             destination=destination,
             travel_dates=travel_dates,
@@ -237,8 +247,113 @@ class ItineraryAgent:
             currency="USD",
             summary=self._generate_summary_text(destination, num_days, all_activities, total_cost),
             packing_list=final_packing,
-            important_notes=notes
+            important_notes=notes,
+            flights=flight_info,
+            accommodation=accommodation_info
         )
+
+    def _format_flight_info(self, flights: Dict) -> Optional[Dict[str, Any]]:
+        """Format flight information for output"""
+        if not flights:
+            return None
+
+        result = {
+            "outbound": None,
+            "return": None,
+            "total_flight_cost": 0
+        }
+
+        # Get best outbound flight
+        best_out = flights.get("best_outbound")
+        if best_out:
+            result["outbound"] = {
+                "airline": best_out.get("airline", "Unknown"),
+                "price": best_out.get("price", 0),
+                "departure_time": best_out.get("departure_time", "TBD"),
+                "arrival_time": best_out.get("arrival_time", "TBD"),
+                "duration": best_out.get("duration", "Unknown"),
+                "stops": best_out.get("stops", 0),
+                "booking_url": best_out.get("booking_url")
+            }
+            result["total_flight_cost"] += best_out.get("price", 0)
+        elif flights.get("outbound_flights"):
+            # Use first option if no best selected
+            first = flights["outbound_flights"][0]
+            result["outbound"] = {
+                "airline": first.get("airline", "Unknown"),
+                "price": first.get("price", 0),
+                "departure_time": first.get("departure_time", "TBD"),
+                "arrival_time": first.get("arrival_time", "TBD"),
+                "duration": first.get("duration", "Unknown"),
+                "stops": first.get("stops", 0),
+                "booking_url": first.get("booking_url")
+            }
+            result["total_flight_cost"] += first.get("price", 0)
+
+        # Get best return flight
+        best_ret = flights.get("best_return")
+        if best_ret:
+            result["return"] = {
+                "airline": best_ret.get("airline", "Unknown"),
+                "price": best_ret.get("price", 0),
+                "departure_time": best_ret.get("departure_time", "TBD"),
+                "arrival_time": best_ret.get("arrival_time", "TBD"),
+                "duration": best_ret.get("duration", "Unknown"),
+                "stops": best_ret.get("stops", 0),
+                "booking_url": best_ret.get("booking_url")
+            }
+            result["total_flight_cost"] += best_ret.get("price", 0)
+        elif flights.get("return_flights"):
+            # Use first option if no best selected
+            first = flights["return_flights"][0]
+            result["return"] = {
+                "airline": first.get("airline", "Unknown"),
+                "price": first.get("price", 0),
+                "departure_time": first.get("departure_time", "TBD"),
+                "arrival_time": first.get("arrival_time", "TBD"),
+                "duration": first.get("duration", "Unknown"),
+                "stops": first.get("stops", 0),
+                "booking_url": first.get("booking_url")
+            }
+            result["total_flight_cost"] += first.get("price", 0)
+
+        # Include all options for reference
+        result["all_outbound_options"] = flights.get("outbound_flights", [])[:5]
+        result["all_return_options"] = flights.get("return_flights", [])[:5]
+
+        return result
+
+    def _format_accommodation_info(self, hotels: Dict) -> Optional[Dict[str, Any]]:
+        """Format accommodation information for output"""
+        if not hotels:
+            return None
+
+        result = {
+            "recommended": None,
+            "all_options": [],
+            "filters_applied": hotels.get("filters_applied", {})
+        }
+
+        # Get best value or highest rated
+        best = hotels.get("best_value") or hotels.get("highest_rated")
+        if best:
+            result["recommended"] = {
+                "name": best.get("name", "Unknown"),
+                "location": best.get("location", ""),
+                "price_per_night": best.get("price_per_night", 0),
+                "rating": best.get("rating", 0),
+                "amenities": best.get("amenities", []),
+                "distance_to_center": best.get("distance_to_center", ""),
+                "near_transport": best.get("near_transport", False),
+                "booking_url": best.get("booking_url"),
+                "description": best.get("description", "")
+            }
+
+        # Include all options
+        result["all_options"] = hotels.get("hotels", [])[:8]
+        result["total_options"] = hotels.get("total_options", len(result["all_options"]))
+
+        return result
 
     def _get_max_activities_per_day(self, constraints: Dict) -> int:
         """Get max activities per day from preferences"""
