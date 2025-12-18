@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Any, Optional
 
 from ..utils.config import get_config
+from ..tools.image_utils import create_placeholder_svg
 
 
 @dataclass
@@ -97,16 +98,17 @@ Create a well-structured markdown document with:
     - Friendly sign-off
 
 ## Image Embedding Guidelines
-- When an item has `has_image: true`, embed it using a PLACEHOLDER syntax:
+- When an item has `has_image: true` AND `image_placeholder` field, embed it using:
   ```
-  ![Activity Name](IMAGE_PLACEHOLDER:activity_name_here)
+  ![Display Name](PASTE_THE_image_placeholder_VALUE_HERE)
+  ```
+- **IMPORTANT**: Use the EXACT value from the `image_placeholder` field - do not modify it!
+- Example: If data shows `"image_placeholder": "IMAGE_PLACEHOLDER:sensoji_temple"`, use:
+  ```
+  ![Senso-ji Temple](IMAGE_PLACEHOLDER:sensoji_temple)
   ```
 - The placeholder will be replaced with actual image data after formatting
-- Include image placeholders for:
-  - Destination hero image (at the top, after title): `![Destination](IMAGE_PLACEHOLDER:hero)`
-  - Hotel images: `![Hotel Name](IMAGE_PLACEHOLDER:hotel_name)`
-  - Activity images: `![Activity Name](IMAGE_PLACEHOLDER:activity_name)`
-- Use the exact name from the data as the placeholder key
+- For the hero image: `![Destination Name](IMAGE_PLACEHOLDER:hero)`
 - Place images prominently to make the document visually engaging
 
 ## Formatting Guidelines
@@ -435,15 +437,31 @@ class PresentationAgent:
     def _strip_base64_from_data(self, data: Any) -> Any:
         """
         Recursively strip base64 image data from dicts/lists.
-        Replaces image_base64 with has_image: true to save LLM tokens.
+        Replaces image_base64 with has_image: true and adds image_placeholder
+        to tell the LLM exactly what placeholder key to use.
         """
         if isinstance(data, dict):
             result = {}
+            has_base64 = False
+            name_value = None
+
+            # First pass: check for image_base64 and name
+            for key, value in data.items():
+                if key == "image_base64" and value:
+                    has_base64 = True
+                elif key == "name":
+                    name_value = value
+
+            # Second pass: build result
             for key, value in data.items():
                 if key == "image_base64":
-                    # Replace base64 with flag
-                    if value:
+                    # Replace base64 with flag and placeholder key
+                    if has_base64:
                         result["has_image"] = True
+                        if name_value:
+                            # Include the exact placeholder key the LLM should use
+                            placeholder_key = self._normalize_placeholder_key(name_value)
+                            result["image_placeholder"] = f"IMAGE_PLACEHOLDER:{placeholder_key}"
                     continue  # Skip the actual base64 data
                 else:
                     result[key] = self._strip_base64_from_data(value)
@@ -456,28 +474,60 @@ class PresentationAgent:
     def _replace_image_placeholders(self, markdown: str, registry: Dict[str, str]) -> str:
         """
         Replace IMAGE_PLACEHOLDER:key patterns with actual base64 data.
+        Uses multiple matching strategies and falls back to SVG placeholder.
         """
         import re
 
+        matched_count = 0
+        unmatched_keys = []
+
         def replace_match(match):
-            key = match.group(1).lower().strip()
-            # Try exact match first
+            nonlocal matched_count, unmatched_keys
+            raw_key = match.group(1)
+            key = raw_key.lower().strip()
+
+            # Strategy 1: Exact match
             if key in registry:
+                matched_count += 1
                 return registry[key]
-            # Try normalized match
+
+            # Strategy 2: Normalized match
             normalized = self._normalize_placeholder_key(key)
             if normalized in registry:
+                matched_count += 1
                 return registry[normalized]
-            # Try partial match
-            for reg_key, base64 in registry.items():
+
+            # Strategy 3: Partial match (key contains registry key or vice versa)
+            for reg_key, base64_data in registry.items():
                 if key in reg_key or reg_key in key:
-                    return base64
-            # No match found, return placeholder as-is
-            return match.group(0)
+                    matched_count += 1
+                    return base64_data
+
+            # Strategy 4: Word overlap matching (for cases like "sensoji_temple" vs "sensoji")
+            key_words = set(normalized.split('_'))
+            for reg_key, base64_data in registry.items():
+                reg_words = set(reg_key.split('_'))
+                # If there's significant word overlap (at least 1 non-trivial word)
+                overlap = key_words & reg_words
+                if overlap and any(len(w) > 2 for w in overlap):
+                    matched_count += 1
+                    return base64_data
+
+            # No match found - create a placeholder SVG
+            unmatched_keys.append(raw_key)
+            label = raw_key.replace('_', ' ').title()
+            return create_placeholder_svg(label, width=400, height=250)
 
         # Replace all IMAGE_PLACEHOLDER:xxx patterns
         pattern = r'IMAGE_PLACEHOLDER:([^)\s]+)'
         result = re.sub(pattern, replace_match, markdown)
+
+        # Debug logging
+        if matched_count > 0:
+            print(f"  Replaced {matched_count} image placeholders with actual images")
+        if unmatched_keys:
+            print(f"  Warning: {len(unmatched_keys)} placeholders not matched: {unmatched_keys[:5]}")
+            print(f"  Available registry keys: {list(registry.keys())[:10]}")
 
         return result
 

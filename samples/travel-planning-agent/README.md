@@ -188,10 +188,10 @@ travel-planning-agent/
 │       └── prompts.py               # System prompts
 ├── examples/
 │   ├── demo.py                      # Main demo
-│   ├── travel_config.json           # Sample config
-│   └── simple_example.py            # Quick start
+│   └── travel_config.json           # Sample config
 └── docs/
-    └── ARCHITECTURE.md              # Architecture details
+    ├── ARCHITECTURE.md              # Architecture details
+    └── DEMO_GUIDE.md                # Demo & vLLora verification guide
 ```
 
 ## Observability
@@ -201,6 +201,28 @@ With vLLora, view all LLM calls at `http://localhost:3000`:
 - `x-thread-id`: Groups all calls for one planning session
 - `x-run-id`: Unique ID for each run
 - `x-label`: Identifies which agent made the call
+
+### vLLora MCP Verification
+
+Use vLLora MCP tools to verify LLM calls programmatically:
+
+```json
+// Get recent stats
+{"tool": "mcp__vllora-mcp__get_recent_stats", "arguments": {"last_n_minutes": 30}}
+
+// Search traces by label
+{"tool": "mcp__vllora-mcp__search_traces", "arguments": {
+  "filters": {"labels": {"label": "travel_orchestrator"}},
+  "include": {"metrics": true, "tokens": true}
+}}
+
+// Get detailed LLM call
+{"tool": "mcp__vllora-mcp__get_llm_call", "arguments": {
+  "trace_id": "...", "span_id": "...", "allow_unsafe_text": true
+}}
+```
+
+See [docs/DEMO_GUIDE.md](docs/DEMO_GUIDE.md) for complete verification instructions.
 
 ## License
 

@@ -231,7 +231,7 @@ class AnalysisAgent:
         user_content = self._build_feasibility_content(itinerary, constraints)
 
         # Get LLM client
-        client = self.config.get_llm_client(label="analysis_agent_feasibility")
+        client = self.config.get_llm_client(label="analyze_itinerary")
 
         try:
             response = client.chat.completions.create(
@@ -297,7 +297,7 @@ class AnalysisAgent:
         user_content = self._build_cost_content(flights, hotels, activities, budget, num_days, currency)
 
         # Get LLM client
-        client = self.config.get_llm_client(label="analysis_agent_cost")
+        client = self.config.get_llm_client(label="analyze_cost")
 
         try:
             response = client.chat.completions.create(
