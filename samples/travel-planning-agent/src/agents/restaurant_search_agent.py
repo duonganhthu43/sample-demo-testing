@@ -11,6 +11,12 @@ from ..utils.config import get_config
 from ..utils.schemas import get_response_format, RESTAURANT_SEARCH_SCHEMA
 
 
+def _get_image_util():
+    """Lazy import to avoid circular dependency"""
+    from ..tools.image_utils import download_and_encode_base64
+    return download_and_encode_base64
+
+
 RESTAURANT_AGENT_TOOLS = [
     {
         "type": "function",
@@ -87,6 +93,7 @@ class RestaurantSearchAgent:
     def _reset_state(self):
         self.content_list: List[str] = []
         self.sources: List[str] = []
+        self.image_urls: List[str] = []
         self.tavily_call_count = 0
         self.extracted_data: Optional[Dict[str, Any]] = None
         self.messages: List[Dict[str, Any]] = []
@@ -208,9 +215,14 @@ Search for restaurants, dining options, and food recommendations."""
 
             print(f"  Agent Tavily search ({self.tavily_call_count}/{self.MAX_TAVILY_CALLS}): {query[:50]}...")
 
-            response = client.search(query=query, max_results=5, search_depth="basic")
+            response = client.search(query=query, max_results=5, search_depth="basic", include_images=True)
 
             results_found = 0
+            for img in response.get("images", []):
+                url = img if isinstance(img, str) else img.get("url", "")
+                if url:
+                    self.image_urls.append(url)
+
             for result in response.get("results", []):
                 if result.get("content"):
                     self.content_list.append(result["content"])
@@ -372,8 +384,20 @@ class RestaurantSearchTool:
 
         result = self.agent.search(destination, areas, cuisine_types, meal_type)
 
+        # Download images for restaurants
+        self._assign_images(result.get("restaurants", []))
+
         RestaurantSearchTool._cache[cache_key] = result
         return self._apply_filters(result, areas, max_budget)
+
+    def _assign_images(self, restaurants: List[Dict[str, Any]]) -> None:
+        download_fn = _get_image_util()
+        for i, restaurant in enumerate(restaurants):
+            if i < len(self.agent.image_urls):
+                image_url = self.agent.image_urls[i]
+                restaurant["image_url"] = image_url
+                print(f"  Downloading image for {restaurant.get('name', 'restaurant')}...")
+                restaurant["image_base64"] = download_fn(image_url)
 
     def _apply_filters(
         self,

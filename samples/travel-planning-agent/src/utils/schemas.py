@@ -76,7 +76,7 @@ ITINERARY_SCHEMA = {
                                 },
                                 "location": {
                                     "type": "string",
-                                    "description": "Specific location or area (e.g., 'Asakusa, Tokyo', 'Narita Airport', 'Shibuya')"
+                                    "description": "Specific location. For MEALS: include full address if available (e.g., '1-22-7 Jinnan, Shibuya, Tokyo'). For ATTRACTIONS: area and district (e.g., 'Asakusa, Tokyo'). For TRANSPORT: station/airport name."
                                 },
                                 "category": {
                                     "type": "string",
@@ -96,7 +96,7 @@ ITINERARY_SCHEMA = {
                                 },
                                 "image_suggestion": {
                                     "type": "string",
-                                    "description": "Image placeholder key in lowercase_snake_case for landmarks/attractions (e.g., 'sensoji_temple', 'tokyo_tower'). Use empty string for meals/transport."
+                                    "description": "Image placeholder key in lowercase_snake_case for landmarks, attractions, AND restaurants (e.g., 'sensoji_temple', 'ichiran_shibuya', 'tsuta_ramen'). Use empty string only for transport/flights."
                                 }
                             },
                             "required": ["time", "activity", "description", "location", "category", "notes", "cost", "source_url", "image_suggestion"],
