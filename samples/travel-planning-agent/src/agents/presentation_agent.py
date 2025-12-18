@@ -84,10 +84,14 @@ Create a well-structured markdown document with:
    ---
    ```
 
-   **IMPORTANT for Day-by-Day:**
+   **CRITICAL - IMAGES FOR EVERY ACTIVITY:**
+   - **EVERY schedule item that has `image_placeholder` MUST have an image embedded!**
+   - Copy the `image_placeholder` value EXACTLY as the image src:
+     `![Activity Name](IMAGE_PLACEHOLDER:xxx)` where IMAGE_PLACEHOLDER:xxx is from the data
+   - Example: if data has `"image_placeholder": "IMAGE_PLACEHOLDER:sensoji_temple"`, write:
+     `![Sensoji Temple](IMAGE_PLACEHOLDER:sensoji_temple)`
+   - Only skip images for Flight/Transport category items
    - Use the `description` field from each schedule item - it contains detailed info
-   - **IMAGES**: If a schedule item has `image_placeholder`, copy it EXACTLY into the markdown:
-     `![Activity Name](IMAGE_PLACEHOLDER:xxx)` where xxx is the key from image_placeholder
    - For flights: include arrival time, duration, and transportation options in the description
    - For meals: use 🍳 (breakfast), 🍜 (lunch), 🍽️ (dinner) icons and show:
      - Restaurant name and location
@@ -98,10 +102,12 @@ Create a well-structured markdown document with:
    - Add horizontal rules (---) between activities for visual separation
    - Link activities if source URLs available: [Activity Name](url)
 
-   **Example meal format:**
+   **Example meal format (with image):**
    ```markdown
    #### 🍜 12:30 - 13:30 | Lunch at Tsukiji Outer Market
    📍 **Location:** Tsukiji, Tokyo | 💰 **Cost:** ~$25/person
+
+   ![Tsukiji Outer Market](IMAGE_PLACEHOLDER:tsukiji_outer_market)
 
    > Fresh sushi and seafood at Tokyo's famous fish market. Try the signature
    > omakase sushi at Sushi Dai or grab tamagoyaki from street vendors.
@@ -351,12 +357,14 @@ class PresentationAgent:
                 "text": f"## Accommodation Data\n\n```json\n{json.dumps(self._strip_base64_from_data(accommodation), indent=2, default=str)}\n```"
             })
 
-        # Part 5: Daily itinerary
+        # Part 5: Daily itinerary (with auto-generated image placeholders)
         days = itinerary.get("days", [])
         if days:
+            # Process days to ensure image placeholders for activities
+            processed_days = self._add_itinerary_image_placeholders(days)
             content_parts.append({
                 "type": "text",
-                "text": f"## Daily Itinerary\n\n```json\n{json.dumps(self._strip_base64_from_data(days), indent=2, default=str)}\n```"
+                "text": f"## Daily Itinerary\n\n```json\n{json.dumps(self._strip_base64_from_data(processed_days), indent=2, default=str)}\n```"
             })
 
         # Part 6: Cost analysis
@@ -460,6 +468,49 @@ class PresentationAgent:
         })
 
         return content_parts
+
+    def _add_itinerary_image_placeholders(self, days: List[Dict]) -> List[Dict]:
+        """
+        Process itinerary days to ensure every activity has an image placeholder.
+        Skips transport/flight items as specified in the schema.
+        """
+        import copy
+        import re
+
+        processed_days = []
+        for day in days:
+            processed_day = copy.deepcopy(day)
+            schedule = processed_day.get("schedule", [])
+
+            for item in schedule:
+                # Skip if already has image_suggestion or image_placeholder
+                if item.get("image_suggestion") or item.get("image_placeholder"):
+                    continue
+
+                # Skip transport-related activities
+                category = (item.get("category") or "").lower()
+                activity = (item.get("activity") or "").lower()
+
+                if category in ["flight", "transport"] or "flight" in activity:
+                    continue
+
+                # Generate image placeholder from activity name
+                activity_name = item.get("activity", "")
+                if activity_name:
+                    # Convert to lowercase snake_case
+                    key = re.sub(r'[^a-z0-9\s]', '', activity_name.lower())
+                    key = re.sub(r'\s+', '_', key.strip())
+                    # Remove common prefixes
+                    for prefix in ['visit_', 'explore_', 'lunch_at_', 'dinner_at_', 'breakfast_at_']:
+                        if key.startswith(prefix):
+                            key = key[len(prefix):]
+                            break
+                    if key:
+                        item["image_suggestion"] = key
+
+            processed_days.append(processed_day)
+
+        return processed_days
 
     def _get_from_research(self, context: Dict, type_name: str) -> Dict:
         """Get item from research by type"""
