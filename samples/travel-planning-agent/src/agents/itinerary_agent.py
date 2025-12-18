@@ -506,6 +506,9 @@ class ItineraryAgent:
                     item = days[day_idx]["schedule"][item_idx]
                     day_num = days[day_idx].get("day", day_idx + 1)
                     item["activity"] = f"{meal_type.capitalize()} - Local restaurant near Day {day_num} area"
+                    # Clear old image suggestion so presentation layer regenerates it
+                    item.pop("image_suggestion", None)
+                    item.pop("image_placeholder", None)
                     print(f"    Replaced unknown duplicate '{raw_location}' with generic")
                     duplicates_fixed += 1
                 else:
@@ -529,6 +532,9 @@ class ItineraryAgent:
                 if replacement:
                     new_activity = f"{meal_type.capitalize()} at {replacement['name']}"
                     item["activity"] = new_activity
+                    # Clear old image suggestion so presentation layer regenerates it
+                    item.pop("image_suggestion", None)
+                    item.pop("image_placeholder", None)
                     if replacement.get("cuisine_type"):
                         old_notes = item.get("notes", "")
                         item["notes"] = f"{replacement['cuisine_type']} cuisine. {old_notes}".strip()
@@ -537,6 +543,9 @@ class ItineraryAgent:
                     # No unused restaurant available - use a generic description
                     day_num = days[day_idx].get("day", day_idx + 1)
                     item["activity"] = f"{meal_type.capitalize()} - Local restaurant near Day {day_num} area"
+                    # Clear old image suggestion
+                    item.pop("image_suggestion", None)
+                    item.pop("image_placeholder", None)
                     print(f"    Replaced duplicate '{canonical}' with generic (no alternatives)")
                 duplicates_fixed += 1
             else:

@@ -1065,6 +1065,11 @@ class PresentationAgent:
         """Detect the category of a placeholder key"""
         key_lower = key.lower()
 
+        # Skip generic placeholders - these should use placeholder SVGs, not fallback images
+        # This prevents reusing the same restaurant image for "Local restaurant near Day X area"
+        if 'local_restaurant' in key_lower or 'near_day' in key_lower or 'day_area' in key_lower:
+            return None
+
         # Hotel patterns
         if any(kw in key_lower for kw in ['hotel', 'inn', 'hostel', 'resort', 'lodge', 'prince', 'hilton', 'marriott', 'hyatt']):
             return 'hotel'
