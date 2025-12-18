@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..utils.config import get_config
 from ..utils.prompts import ORCHESTRATOR_SYSTEM_PROMPT
-from .tools import TOOL_DEFINITIONS, ToolExecutor
+from .tools import get_tool_definitions, ToolExecutor
 
 
 @dataclass
@@ -117,9 +117,10 @@ class TravelPlanningOrchestrator:
                 print(f"  tool_choice: {current_tool_choice}")
 
                 # Call LLM with tools
+                tools = get_tool_definitions(self.config)
                 response = llm_client.chat.completions.create(
                     messages=messages,
-                    tools=TOOL_DEFINITIONS,
+                    tools=tools,
                     tool_choice=current_tool_choice,
                     **llm_params
                 )
@@ -200,7 +201,7 @@ class TravelPlanningOrchestrator:
 
     def _execute_tools(self, tool_calls) -> List[Dict[str, Any]]:
         """
-        Execute tool calls, optionally in parallel
+        Execute tool calls in parallel using ThreadPoolExecutor
 
         Args:
             tool_calls: List of tool calls from LLM
@@ -208,21 +209,36 @@ class TravelPlanningOrchestrator:
         Returns:
             List of results in same order as tool calls
         """
-        if self.config.agent.enable_parallel_execution and len(tool_calls) > 1:
-            return self._execute_tools_parallel(tool_calls)
-        else:
-            return self._execute_tools_sequential(tool_calls)
-
-    def _execute_tools_sequential(self, tool_calls) -> List[Dict[str, Any]]:
-        """Execute tools sequentially"""
-        results = []
-        for tc in tool_calls:
+        if len(tool_calls) == 1:
+            # Single tool call - execute directly
+            tc = tool_calls[0]
             try:
                 arguments = json.loads(tc.function.arguments)
                 result = self.tool_executor.execute_tool(tc.function.name, arguments)
-                results.append(result)
+                return [result]
             except Exception as e:
-                results.append({"success": False, "error": str(e)})
+                return [{"success": False, "error": str(e)}]
+
+        # Multiple tool calls - execute in parallel
+        results = [None] * len(tool_calls)
+
+        def execute_single(index, tc):
+            try:
+                arguments = json.loads(tc.function.arguments)
+                return index, self.tool_executor.execute_tool(tc.function.name, arguments)
+            except Exception as e:
+                return index, {"success": False, "error": str(e)}
+
+        with ThreadPoolExecutor(max_workers=len(tool_calls)) as executor:
+            futures = [
+                executor.submit(execute_single, i, tc)
+                for i, tc in enumerate(tool_calls)
+            ]
+
+            for future in as_completed(futures):
+                index, result = future.result()
+                results[index] = result
+
         return results
 
     def _sanitize_for_llm(self, data: Any) -> Any:
@@ -247,29 +263,6 @@ class TravelPlanningOrchestrator:
             return data
 
         return data
-
-    def _execute_tools_parallel(self, tool_calls) -> List[Dict[str, Any]]:
-        """Execute tools in parallel using ThreadPoolExecutor"""
-        results = [None] * len(tool_calls)
-
-        def execute_single(index, tc):
-            try:
-                arguments = json.loads(tc.function.arguments)
-                return index, self.tool_executor.execute_tool(tc.function.name, arguments)
-            except Exception as e:
-                return index, {"success": False, "error": str(e)}
-
-        with ThreadPoolExecutor(max_workers=len(tool_calls)) as executor:
-            futures = [
-                executor.submit(execute_single, i, tc)
-                for i, tc in enumerate(tool_calls)
-            ]
-
-            for future in as_completed(futures):
-                index, result = future.result()
-                results[index] = result
-
-        return results
 
     def _build_initial_prompt(self, task: str, constraints: Dict[str, Any]) -> str:
         """Build the initial user prompt"""
@@ -303,6 +296,8 @@ class TravelPlanningOrchestrator:
         prompt_parts.append("Please research and plan this trip using the available tools.")
         prompt_parts.append("Start by researching the destination, then find flights and accommodations,")
         prompt_parts.append("research activities, and finally generate a comprehensive itinerary.")
+        prompt_parts.append("Also analyze the weather for the trip dates.")
+        prompt_parts.append("Always run budget optimization and schedule optimization before generating the itinerary.")
         prompt_parts.append("Ensure all hard constraints are met and try to satisfy preferences.")
 
         return "\n".join(prompt_parts)

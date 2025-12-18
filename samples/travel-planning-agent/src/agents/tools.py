@@ -182,6 +182,34 @@ TOOL_DEFINITIONS = [
             }
         }
     },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_schedule_optimization",
+            "description": "Optimize the daily activity schedule for efficiency (group nearby activities, reduce travel time)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "activities": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "List of activities to schedule"
+                    },
+                    "preferences": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "User preferences relevant to pacing and scheduling"
+                    },
+                    "num_days": {
+                        "type": "integer",
+                        "description": "Number of days in the trip"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
     # Specialized Tools
     {
         "type": "function",
@@ -317,6 +345,11 @@ TOOL_DEFINITIONS = [
         }
     }
 ]
+
+
+def get_tool_definitions(config=None):
+    config = config or get_config()
+    return TOOL_DEFINITIONS
 
 
 class ToolExecutor:
@@ -476,6 +509,20 @@ class ToolExecutor:
                 self.context["analysis"].append({"type": "cost", **result.to_dict()})
                 return {"success": True, "result": result.to_dict()}
 
+            elif tool_name == "analyze_schedule_optimization":
+                agent = self._get_analysis_agent()
+                activities = arguments.get("activities", self._get_activities_from_context())
+                preferences = arguments.get("preferences", self.context.get("constraints", {}).get("preferences", []))
+                num_days = arguments.get("num_days", self.context.get("num_days", 5))
+
+                result = agent.analyze_schedule_optimization(
+                    activities=activities,
+                    preferences=preferences,
+                    num_days=num_days
+                )
+                self.context["analysis"].append({"type": "schedule", **result.to_dict()})
+                return {"success": True, "result": result.to_dict()}
+
             # Specialized Tools
             elif tool_name == "optimize_budget":
                 agent = self._get_budget_agent()
@@ -515,12 +562,16 @@ class ToolExecutor:
 
             # Output Tools
             elif tool_name == "generate_itinerary":
+                # Ensure critical analyses have run at least once
+                self._ensure_required_analyses()
                 agent = self._get_itinerary_agent()
                 result = agent.generate_itinerary(self.context)
                 self.context["itinerary"] = result.to_dict()
                 return {"success": True, "result": result.to_dict()}
 
             elif tool_name == "generate_summary":
+                # Ensure critical analyses have run at least once
+                self._ensure_required_analyses()
                 agent = self._get_itinerary_agent()
                 # Ensure itinerary is a dict, not None
                 itinerary = self.context.get("itinerary") or {}
@@ -528,6 +579,8 @@ class ToolExecutor:
                 return {"success": True, "result": result.to_dict()}
 
             elif tool_name == "format_presentation":
+                # Ensure critical analyses have run at least once
+                self._ensure_required_analyses()
                 agent = self._get_presentation_agent()
                 # Ensure itinerary is a dict, not None
                 itinerary = self.context.get("itinerary") or {}
@@ -541,6 +594,70 @@ class ToolExecutor:
         except Exception as e:
             print(f"Tool execution error: {str(e)}")
             return {"success": False, "error": str(e)}
+
+    def _ensure_required_analyses(self) -> None:
+        destination = self.context.get("destination")
+        has_schedule = any(item.get("type") == "schedule" for item in self.context.get("analysis", []))
+        has_budget = any(item.get("type") == "budget" for item in self.context.get("specialized", []))
+        has_safety = any(item.get("type") == "safety" for item in self.context.get("specialized", []))
+        has_transport = any(item.get("type") == "transport" for item in self.context.get("specialized", []))
+
+        # Schedule optimization
+        if not has_schedule:
+            agent = self._get_analysis_agent()
+            activities = self._get_activities_from_context()
+            preferences = self.context.get("constraints", {}).get("preferences", [])
+            num_days = self.context.get("num_days", 5)
+
+            result = agent.analyze_schedule_optimization(
+                activities=activities,
+                preferences=preferences,
+                num_days=num_days
+            )
+            self.context["analysis"].append({"type": "schedule", **result.to_dict()})
+
+        # Budget optimization
+        if not has_budget:
+            agent = self._get_budget_agent()
+            current_selections = {
+                "flights": self._get_flights_from_context(),
+                "hotels": self._get_hotels_from_context(),
+                "activities": self._get_activities_from_context(),
+                "num_days": self.context.get("num_days", 5)
+            }
+
+            budget_limit = self.context.get("constraints", {}).get("budget")
+            if isinstance(budget_limit, str):
+                import re
+                match = re.search(r"[\$]?(\d+(?:,\d{3})*(?:\.\d{2})?)", budget_limit)
+                budget_limit = float(match.group(1).replace(",", "")) if match else 1500
+            if not isinstance(budget_limit, (int, float)):
+                budget_limit = 1500
+
+            result = agent.optimize_budget(
+                current_selections=current_selections,
+                budget_limit=float(budget_limit),
+                priorities=self.context.get("constraints", {}).get("priorities")
+            )
+            self.context["specialized"].append({"type": "budget", **result.to_dict()})
+
+        # Safety analysis
+        if not has_safety and destination:
+            try:
+                agent = self._get_safety_agent()
+                result = agent.analyze_safety(destination=destination)
+                self.context["specialized"].append({"type": "safety", **result.to_dict()})
+            except Exception as e:
+                print(f"Safety analysis auto-run failed: {e}")
+
+        # Transport analysis
+        if not has_transport and destination:
+            try:
+                agent = self._get_transport_agent()
+                result = agent.analyze_local_transport(destination=destination)
+                self.context["specialized"].append({"type": "transport", **result.to_dict()})
+            except Exception as e:
+                print(f"Transport analysis auto-run failed: {e}")
 
     def _get_flights_from_context(self) -> Dict:
         """Extract flight data from context"""

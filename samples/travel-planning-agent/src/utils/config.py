@@ -53,7 +53,6 @@ class SearchConfig(BaseSettings):
 class AgentConfig(BaseSettings):
     """Agent Behavior Configuration"""
     max_iterations: int = Field(default=20, alias="MAX_ITERATIONS")
-    enable_parallel_execution: bool = Field(default=True, alias="ENABLE_PARALLEL_EXECUTION")
     request_timeout: int = Field(default=30, alias="REQUEST_TIMEOUT")
 
     class Config:
@@ -159,9 +158,14 @@ class Config:
                 print("Warning: No Anthropic API key configured")
                 valid = False
 
-        # Check search configuration (optional)
+        # Check search configuration
         if not self.search.tavily_api_key and not self.search.serpapi_api_key:
-            print("Note: No search API keys configured - using mock search")
+            if self.app.mock_external_apis:
+                print("Note: No search API keys configured - using mock search")
+            else:
+                print("Warning: No search API keys configured and MOCK_EXTERNAL_APIS=false")
+                print("  Set TAVILY_API_KEY or SERPAPI_API_KEY in .env")
+                valid = False
 
         return valid
 

@@ -1,11 +1,15 @@
-"""
+""" 
 Weather Service Tool
 Provides weather forecasts with mock data support
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import random
+import json
+from datetime import datetime, timedelta
+
+from ..utils.config import get_config
 
 
 @dataclass
@@ -69,7 +73,16 @@ class WeatherService:
     }
 
     def __init__(self):
-        self.mock_mode = True
+        config = get_config()
+        self.mock_mode = config.app.mock_external_apis
+        self.tavily_api_key = config.search.tavily_api_key
+        self.config = config
+
+        if not self.tavily_api_key:
+            if self.mock_mode:
+                print("Tavily key not found - using mock mode for weather")
+            else:
+                raise ValueError("TAVILY_API_KEY is required when MOCK_EXTERNAL_APIS=false")
 
     def get_forecast(
         self,
@@ -96,11 +109,171 @@ class WeatherService:
 
         print(f"Getting weather forecast for {destination}")
 
-        # Generate mock forecast
-        forecasts = self._generate_mock_forecast(destination, start_date, num_days)
-        WeatherService._cache[cache_key] = forecasts
+        if self.mock_mode and not self.tavily_api_key:
+            forecasts = self._generate_mock_forecast(destination, start_date, num_days)
+            WeatherService._cache[cache_key] = forecasts
+            return self._format_result(forecasts)
 
-        return self._format_result(forecasts)
+        forecast = self._get_forecast_via_tavily(destination, start_date, num_days)
+        WeatherService._cache[cache_key] = forecast
+        return forecast
+
+    def _get_forecast_via_tavily(self, destination: str, start_date: str, num_days: int) -> Dict[str, Any]:
+        content_list, sources = self._search_tavily_weather(destination, start_date, num_days)
+        try:
+            extracted = self._extract_weather_with_llm(destination, start_date, num_days, content_list)
+            extracted["sources"] = sources[:5]
+            return extracted
+        except Exception as e:
+            print(f"Weather extraction failed: {str(e)}")
+            if self.mock_mode:
+                forecasts = self._generate_mock_forecast(destination, start_date, num_days)
+                return self._format_result(forecasts)
+            raise
+
+    def _search_tavily_weather(self, destination: str, start_date: str, num_days: int) -> Tuple[List[str], List[str]]:
+        try:
+            from tavily import TavilyClient
+
+            client = TavilyClient(api_key=self.tavily_api_key)
+
+            content_list: List[str] = []
+            sources: List[str] = []
+
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            except Exception:
+                start_dt = datetime.utcnow()
+
+            end_dt = start_dt + timedelta(days=max(1, num_days))
+            date_range = f"{start_dt.strftime('%Y-%m-%d')} to {end_dt.strftime('%Y-%m-%d')}"
+
+            queries = [
+                f"{destination} weather forecast {date_range} daily high low precipitation",
+                f"{destination} expected weather {date_range} temperature rain humidity",
+                f"{destination} climatology typical weather {start_dt.strftime('%B %Y')} high low rain",
+            ]
+
+            for query in queries:
+                try:
+                    print(f"  Tavily query: {query}")
+                    response = client.search(
+                        query=query,
+                        max_results=4,
+                        search_depth="basic"
+                    )
+
+                    for result in response.get("results", []):
+                        content = result.get("content", "")
+                        url = result.get("url", "")
+                        if content:
+                            content_list.append(content)
+                        if url and url not in sources:
+                            sources.append(url)
+                except Exception as e:
+                    print(f"  Query failed: {str(e)}")
+                    continue
+
+            if not content_list:
+                raise ValueError("No Tavily weather results")
+
+            return content_list, sources
+
+        except Exception as e:
+            print(f"Tavily weather search failed: {str(e)}")
+            raise
+
+    def _extract_weather_with_llm(
+        self,
+        destination: str,
+        start_date: str,
+        num_days: int,
+        content_list: List[str]
+    ) -> Dict[str, Any]:
+        combined = "\n\n---\n\n".join(content_list[:10])
+        if len(combined) > 12000:
+            combined = combined[:12000] + "..."
+
+        system_prompt = """You are a weather data extraction assistant.
+
+Extract a structured travel weather forecast from the provided search snippets.
+
+Return ONLY valid JSON with this schema:
+{
+  "daily_forecast": [
+    {
+      "date": "YYYY-MM-DD",
+      "condition": "Sunny/Cloudy/Rain/etc",
+      "high_temp_celsius": 0,
+      "low_temp_celsius": 0,
+      "precipitation_chance": 0,
+      "humidity": 0,
+      "recommendation": "short packing/actionable note"
+    }
+  ],
+  "summary": {
+    "average_high": 0,
+    "average_low": 0,
+    "average_rain_chance": 0,
+    "overall_recommendation": "short overall weather summary"
+  },
+  "packing_suggestions": ["item1", "item2"]
+}
+
+Rules:
+- daily_forecast MUST have exactly num_days items.
+- Use best-effort extraction; if a field isn't present, infer conservatively.
+"""
+
+        client = self.config.get_llm_client(label="weather_service")
+        try:
+            response = client.chat.completions.create(
+                model=self.config.llm.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": f"Destination: {destination}\nStart date: {start_date}\nnum_days: {num_days}\n\nSnippets:\n{combined}",
+                    },
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=1500,
+            )
+        except Exception as e:
+            msg = str(e).lower()
+            if "response_format" in msg or "unknown" in msg or "unsupported" in msg:
+                response = client.chat.completions.create(
+                    model=self.config.llm.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": f"Destination: {destination}\nStart date: {start_date}\nnum_days: {num_days}\n\nSnippets:\n{combined}",
+                        },
+                    ],
+                    temperature=0.2,
+                    max_tokens=1500,
+                )
+            else:
+                raise
+
+        content = response.choices[0].message.content or ""
+        content = content.strip()
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+
+        data = json.loads(content.strip())
+
+        daily = data.get("daily_forecast")
+        if not isinstance(daily, list) or len(daily) != num_days:
+            raise ValueError("Invalid daily_forecast length")
+
+        return data
 
     def _generate_mock_forecast(
         self,

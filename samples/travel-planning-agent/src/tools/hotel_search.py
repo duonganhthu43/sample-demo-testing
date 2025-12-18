@@ -70,12 +70,12 @@ class HotelSearchTool:
         self.config = get_config()
         self.mock_mode = self.config.app.mock_external_apis
 
-        # Auto-enable mock mode if Tavily API key is missing
         if not self.config.search.tavily_api_key:
-            self.mock_mode = True
-            print("Tavily key not found - using mock mode for hotels")
-        else:
-            print(f"HotelSearchTool initialized with Tavily (mock_mode: {self.mock_mode})")
+            if self.mock_mode:
+                print("Tavily key not found - using mock mode for hotels")
+            else:
+                raise ValueError("TAVILY_API_KEY is required when MOCK_EXTERNAL_APIS=false")
+        print(f"HotelSearchTool initialized with Tavily (mock_mode: {self.mock_mode})")
 
     def search_hotels(
         self,
@@ -173,18 +173,13 @@ class HotelSearchTool:
 
             print(f"Found {len(hotels)} hotel options via Tavily (with {len(collected_images)} images)")
 
-            # If we got very few results, supplement with fallback data
-            if len(hotels) < 3:
-                fallback = self._generate_fallback_hotels(destination)
-                for fb in fallback:
-                    if fb.name not in seen_hotels:
-                        hotels.append(fb)
-
             return hotels
 
         except Exception as e:
             print(f"Tavily hotel search failed: {str(e)}")
-            return self._generate_fallback_hotels(destination)
+            if self.mock_mode:
+                return self._generate_fallback_hotels(destination)
+            raise
 
     def _assign_images_to_hotels(
         self,
@@ -193,9 +188,9 @@ class HotelSearchTool:
     ) -> None:
         """Assign and encode images to hotels"""
         if not image_urls:
-            # Use placeholders if no images available
-            for hotel in hotels:
-                hotel.image_base64 = create_placeholder_svg(hotel.name)
+            if self.mock_mode:
+                for hotel in hotels:
+                    hotel.image_base64 = create_placeholder_svg(hotel.name)
             return
 
         # Distribute images to hotels (round-robin if fewer images than hotels)
@@ -208,10 +203,12 @@ class HotelSearchTool:
 
                 # Use placeholder if download failed
                 if not hotel.image_base64:
-                    hotel.image_base64 = create_placeholder_svg(hotel.name)
+                    if self.mock_mode:
+                        hotel.image_base64 = create_placeholder_svg(hotel.name)
             else:
                 # No more images, use placeholder
-                hotel.image_base64 = create_placeholder_svg(hotel.name)
+                if self.mock_mode:
+                    hotel.image_base64 = create_placeholder_svg(hotel.name)
 
     def _parse_tavily_hotel_result(
         self,

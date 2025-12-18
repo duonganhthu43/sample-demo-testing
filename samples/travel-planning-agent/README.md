@@ -164,7 +164,6 @@ TAVILY_API_KEY=tvly-your-key
 
 # Agent settings
 MAX_ITERATIONS=20
-ENABLE_PARALLEL_EXECUTION=true
 ```
 
 ## Project Structure

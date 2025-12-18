@@ -162,42 +162,29 @@ class ItineraryAgent:
         client = self.config.get_llm_client(label="itinerary_agent")
 
         try:
-            response = client.chat.completions.create(
-                model=self.config.llm.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": ITINERARY_SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Create a detailed day-by-day itinerary based on this research data:\n\n{context_summary}"
-                    }
-                ],
-                temperature=0.3,
-                max_tokens=4000
-            )
-
-            content = response.choices[0].message.content
-
-            # Parse JSON response
+            response = self._invoke_itinerary_llm(client, context_summary)
+            content = self._extract_llm_content(response)
             itinerary_data = self._parse_llm_response(content)
+            normalized = self._normalize_itinerary_data(itinerary_data)
 
             # Extract flight and hotel info for output
             flights = self._extract_flights(context)
             hotels = self._extract_hotels(context)
 
-            print("Itinerary generated successfully")
+            print(
+                f"Itinerary JSON validated ({len(normalized['days'])} days, "
+                f"estimated cost ≈ ${normalized['total_estimated_cost']:.2f})."
+            )
 
             return ItineraryResult(
                 destination=context.get("destination", "Unknown"),
                 travel_dates=context.get("travel_dates", ""),
-                days=itinerary_data.get("days", []),
-                total_estimated_cost=itinerary_data.get("total_estimated_cost", 0),
+                days=normalized.get("days", []),
+                total_estimated_cost=normalized.get("total_estimated_cost", 0.0),
                 currency="USD",
-                summary=itinerary_data.get("summary", ""),
-                packing_list=itinerary_data.get("packing_list", []),
-                important_notes=itinerary_data.get("important_notes", []),
+                summary=normalized.get("summary", ""),
+                packing_list=normalized.get("packing_list", []),
+                important_notes=normalized.get("important_notes", []),
                 flights=flights,
                 accommodation=hotels
             )
@@ -282,6 +269,116 @@ class ItineraryAgent:
 
         return "\n".join(sections)
 
+    def _invoke_itinerary_llm(self, client: Any, context_summary: str) -> Any:
+        try:
+            return client.chat.completions.create(
+                model=self.config.llm.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": ITINERARY_SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Create a detailed day-by-day itinerary based on this "
+                            f"research data:\n\n{context_summary}"
+                        )
+                    }
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                max_tokens=4000
+            )
+        except Exception as e:
+            msg = str(e).lower()
+            if "response_format" in msg or "unknown" in msg or "unsupported" in msg:
+                print("Retrying itinerary generation without JSON enforcement (gateway limitation).")
+                return client.chat.completions.create(
+                    model=self.config.llm.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": ITINERARY_SYSTEM_PROMPT
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "Create a detailed day-by-day itinerary based on this "
+                                f"research data:\n\n{context_summary}"
+                            )
+                        }
+                    ],
+                    temperature=0.3,
+                    max_tokens=4000
+                )
+            raise
+
+    def _extract_llm_content(self, response: Any) -> str:
+        choices = getattr(response, "choices", None)
+        if not choices:
+            raise ValueError("Itinerary LLM response contained no choices")
+
+        first_choice = choices[0]
+        message = getattr(first_choice, "message", None) if first_choice else None
+        content = getattr(message, "content", None) if message else None
+
+        if not content:
+            raise ValueError("Itinerary LLM response was empty")
+
+        print(f"Received itinerary response ({len(content)} chars).")
+        return content
+
+    def _normalize_itinerary_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValueError("Itinerary data must be a JSON object")
+
+        normalized: Dict[str, Any] = dict(data)
+
+        days = normalized.get("days")
+        if not isinstance(days, list) or not days:
+            raise ValueError("Itinerary data must include a non-empty days list")
+
+        cleaned_days: List[Dict[str, Any]] = []
+        for idx, day in enumerate(days):
+            if not isinstance(day, dict):
+                raise ValueError(f"Day {idx + 1} must be an object")
+            schedule = day.get("schedule", [])
+            if not isinstance(schedule, list):
+                raise ValueError(f"Day {idx + 1} schedule must be a list")
+            cleaned_schedule = [item for item in schedule if isinstance(item, dict)]
+            cleaned_day = dict(day)
+            cleaned_day["schedule"] = cleaned_schedule
+            cleaned_days.append(cleaned_day)
+        normalized["days"] = cleaned_days
+
+        total_cost = normalized.get("total_estimated_cost")
+        if total_cost is None:
+            raise ValueError("Itinerary data missing total_estimated_cost")
+        try:
+            normalized["total_estimated_cost"] = float(total_cost)
+        except (TypeError, ValueError):
+            raise ValueError("total_estimated_cost must be numeric")
+
+        for key in ("packing_list", "important_notes"):
+            value = normalized.get(key, [])
+            if isinstance(value, list):
+                normalized[key] = value
+            elif isinstance(value, str):
+                normalized[key] = [value]
+            elif value is None:
+                normalized[key] = []
+            else:
+                raise ValueError(f"{key} must be a list or string")
+
+        summary = normalized.get("summary")
+        if summary is None:
+            normalized["summary"] = ""
+        elif not isinstance(summary, str):
+            raise ValueError("summary must be a string")
+
+        return normalized
+
     def _strip_base64_from_data(self, data: Any) -> Any:
         if isinstance(data, dict):
             result: Dict[str, Any] = {}
@@ -321,8 +418,7 @@ class ItineraryAgent:
 
             return json.loads(content.strip())
         except json.JSONDecodeError as e:
-            print(f"JSON parse error: {e}")
-            return {"days": [], "total_estimated_cost": 0, "summary": "", "packing_list": [], "important_notes": []}
+            raise ValueError(f"Invalid JSON from itinerary LLM: {e}") from e
 
     def _extract_flights(self, context: Dict) -> Optional[Dict[str, Any]]:
         """Extract and format flight data from context"""

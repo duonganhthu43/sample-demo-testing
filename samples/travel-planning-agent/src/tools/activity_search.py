@@ -68,12 +68,12 @@ class ActivitySearchTool:
         self.config = get_config()
         self.mock_mode = self.config.app.mock_external_apis
 
-        # Auto-enable mock mode if Tavily API key is missing
         if not self.config.search.tavily_api_key:
-            self.mock_mode = True
-            print("Tavily key not found - using mock mode for activities")
-        else:
-            print(f"ActivitySearchTool initialized with Tavily (mock_mode: {self.mock_mode})")
+            if self.mock_mode:
+                print("Tavily key not found - using mock mode for activities")
+            else:
+                raise ValueError("TAVILY_API_KEY is required when MOCK_EXTERNAL_APIS=false")
+        print(f"ActivitySearchTool initialized with Tavily (mock_mode: {self.mock_mode})")
 
     def search_activities(
         self,
@@ -178,11 +178,17 @@ class ActivitySearchTool:
             self._assign_images_to_activities(activities, collected_images)
 
             print(f"Found {len(activities)} activities via Tavily (with {len(collected_images)} images)")
-            return activities if activities else self._generate_fallback_activities(destination)
+            if activities:
+                return activities
+            if self.mock_mode:
+                return self._generate_fallback_activities(destination)
+            return []
 
         except Exception as e:
             print(f"Tavily activity search failed: {str(e)}")
-            return self._generate_fallback_activities(destination)
+            if self.mock_mode:
+                return self._generate_fallback_activities(destination)
+            raise
 
     def _assign_images_to_activities(
         self,
@@ -191,9 +197,9 @@ class ActivitySearchTool:
     ) -> None:
         """Assign and encode images to activities"""
         if not image_urls:
-            # Use placeholders if no images available
-            for activity in activities:
-                activity.image_base64 = create_placeholder_svg(activity.name)
+            if self.mock_mode:
+                for activity in activities:
+                    activity.image_base64 = create_placeholder_svg(activity.name)
             return
 
         # Distribute images to activities (round-robin if fewer images than activities)
@@ -206,10 +212,12 @@ class ActivitySearchTool:
 
                 # Use placeholder if download failed
                 if not activity.image_base64:
-                    activity.image_base64 = create_placeholder_svg(activity.name)
+                    if self.mock_mode:
+                        activity.image_base64 = create_placeholder_svg(activity.name)
             else:
                 # No more images, use placeholder
-                activity.image_base64 = create_placeholder_svg(activity.name)
+                if self.mock_mode:
+                    activity.image_base64 = create_placeholder_svg(activity.name)
 
     def _parse_tavily_result(
         self,

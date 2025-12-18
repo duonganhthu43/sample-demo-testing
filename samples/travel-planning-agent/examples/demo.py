@@ -154,9 +154,6 @@ def main():
     print("  Output: generate itinerary, generate summary")
     print()
 
-    input("Press Enter to start autonomous planning...")
-    print()
-
     try:
         # Run travel planning
         result = run_travel_planning(

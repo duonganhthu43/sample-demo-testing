@@ -4,6 +4,7 @@ Gathers information about destinations, flights, hotels, and activities using Ta
 """
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
 
@@ -116,7 +117,11 @@ class ActivityResearchResult:
 DESTINATION_EXTRACTION_PROMPT = """You are a travel information extraction expert. Your task is to extract structured travel information from raw search results.
 
 ## Input
-You will receive search results about a travel destination. Extract the following information:
+You will receive a JSON object with:
+- "destination": The travel destination name
+- "search_results": Array of search result text content
+
+Extract the following information:
 
 ## Output Format
 Return a valid JSON object with this structure:
@@ -152,6 +157,7 @@ class ResearchAgent:
 
     def __init__(self, config=None):
         self.config = config or get_config()
+        self.mock_mode = self.config.app.mock_external_apis
         self.flight_tool = FlightSearchTool()
         self.hotel_tool = HotelSearchTool()
         self.activity_tool = ActivitySearchTool()
@@ -159,7 +165,10 @@ class ResearchAgent:
         if self.config.search.tavily_api_key:
             print("ResearchAgent initialized with Tavily API")
         else:
-            print("Warning: Tavily API key not found - will use fallback data")
+            if self.mock_mode:
+                print("Warning: Tavily API key not found - will use fallback data")
+            else:
+                raise ValueError("TAVILY_API_KEY is required when MOCK_EXTERNAL_APIS=false")
 
     def research_destination(self, destination: str) -> DestinationResult:
         """
@@ -197,27 +206,32 @@ class ResearchAgent:
                 f"{destination} safety travel advisory",
             ]
 
-            for query in queries:
+            def execute_query(query: str) -> dict:
+                """Execute a single Tavily query"""
                 try:
                     print(f"  Tavily query: {query}")
-                    response = client.search(
+                    return client.search(
                         query=query,
                         max_results=3,
                         search_depth="basic"
                     )
+                except Exception as e:
+                    print(f"  Query failed: {str(e)}")
+                    return {"results": []}
 
+            # Execute all queries in parallel using ThreadPoolExecutor
+            print(f"  Executing {len(queries)} Tavily queries in parallel...")
+            with ThreadPoolExecutor(max_workers=len(queries)) as executor:
+                futures = {executor.submit(execute_query, q): q for q in queries}
+                for future in as_completed(futures):
+                    response = future.result()
                     for result in response.get("results", []):
                         content = result.get("content", "")
                         url = result.get("url", "")
-
                         if content:
                             all_content.append(content)
                         if url and url not in sources:
                             sources.append(url)
-
-                except Exception as e:
-                    print(f"  Query failed: {str(e)}")
-                    continue
 
             # Use LLM to extract structured info from all content
             if all_content:
@@ -243,34 +257,68 @@ class ResearchAgent:
 
         except Exception as e:
             print(f"Tavily destination search failed: {str(e)}")
-            return self._generate_fallback_destination(destination)
+            if self.mock_mode:
+                return self._generate_fallback_destination(destination)
+            raise
 
     def _extract_with_llm(self, destination: str, content_list: List[str]) -> Dict[str, Any]:
         """Use LLM to extract structured info from search results"""
         try:
             # Get LLM client
-            llm_client = self.config.get_llm_client(label="research_agent_extraction")
+            llm_client = self.config.get_llm_client(label="research_extraction")
 
-            # Combine content (limit to avoid token limits)
-            combined_content = "\n\n---\n\n".join(content_list[:10])
-            if len(combined_content) > 8000:
-                combined_content = combined_content[:8000] + "..."
+            # Prepare structured input (limit to avoid token limits)
+            truncated_content = []
+            total_chars = 0
+            for content in content_list[:10]:
+                if total_chars + len(content) > 8000:
+                    break
+                truncated_content.append(content)
+                total_chars += len(content)
 
-            response = llm_client.chat.completions.create(
-                model=self.config.llm.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": DESTINATION_EXTRACTION_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Extract travel information for {destination} from these search results:\n\n{combined_content}"
-                    }
-                ],
-                temperature=0.2,
-                max_tokens=1500
-            )
+            # Structure the input as JSON for cleaner separation of data and instructions
+            user_input = {
+                "destination": destination,
+                "search_results": truncated_content
+            }
+
+            try:
+                response = llm_client.chat.completions.create(
+                    model=self.config.llm.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": DESTINATION_EXTRACTION_PROMPT
+                        },
+                        {
+                            "role": "user",
+                            "content": json.dumps(user_input)
+                        }
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.2,
+                    max_tokens=1500
+                )
+            except Exception as e:
+                msg = str(e).lower()
+                if "response_format" in msg or "unknown" in msg or "unsupported" in msg:
+                    response = llm_client.chat.completions.create(
+                        model=self.config.llm.model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": DESTINATION_EXTRACTION_PROMPT
+                            },
+                            {
+                                "role": "user",
+                                "content": json.dumps(user_input)
+                            }
+                        ],
+                        temperature=0.2,
+                        max_tokens=1500
+                    )
+                else:
+                    raise
 
             content = response.choices[0].message.content
             return self._parse_llm_response(content)

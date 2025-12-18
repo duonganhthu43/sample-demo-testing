@@ -57,12 +57,12 @@ class FlightSearchTool:
         self.config = get_config()
         self.mock_mode = self.config.app.mock_external_apis
 
-        # Auto-enable mock mode if Tavily API key is missing
         if not self.config.search.tavily_api_key:
-            self.mock_mode = True
-            print("Tavily key not found - using mock mode for flights")
-        else:
-            print(f"FlightSearchTool initialized with Tavily (mock_mode: {self.mock_mode})")
+            if self.mock_mode:
+                print("Tavily key not found - using mock mode for flights")
+            else:
+                raise ValueError("TAVILY_API_KEY is required when MOCK_EXTERNAL_APIS=false")
+        print(f"FlightSearchTool initialized with Tavily (mock_mode: {self.mock_mode})")
 
     def search_flights(
         self,
@@ -160,20 +160,14 @@ class FlightSearchTool:
 
             print(f"Found {len(flights)} flight options via Tavily")
 
-            # If we got very few results, supplement with fallback data
-            if len(flights) < 3:
-                fallback = self._generate_fallback_flights(origin, destination, date)
-                for fb in fallback:
-                    flight_key = (fb.airline, fb.price, fb.stops)
-                    if flight_key not in seen_flights:
-                        flights.append(fb)
-
             flights.sort(key=lambda x: x.price)
             return flights
 
         except Exception as e:
             print(f"Tavily flight search failed: {str(e)}")
-            return self._generate_fallback_flights(origin, destination, date)
+            if self.mock_mode:
+                return self._generate_fallback_flights(origin, destination, date)
+            raise
 
     def _parse_tavily_flight_result(
         self,

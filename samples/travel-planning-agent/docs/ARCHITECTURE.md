@@ -200,7 +200,7 @@ Uses Pydantic for type-safe configuration:
 class Config:
     llm: LLMConfig        # Provider, API keys, model
     search: SearchConfig  # Search API keys
-    agent: AgentConfig    # Max iterations, parallel execution
+    agent: AgentConfig    # Max iterations, request timeout
     app: AppConfig        # Logging, output dir, mock mode
 ```
 
@@ -315,22 +315,20 @@ Iteration 5: format_presentation
    └── Creates beautiful markdown output with tables, checklists, links
 ```
 
-### Parallel Execution in Practice
+### Parallel Execution
 
-When `ENABLE_PARALLEL_EXECUTION=true`:
+Multiple tools within an iteration are always executed in parallel using `ThreadPoolExecutor`:
 
 ```python
-# Iteration 2 - 3 tools called together
-if len(tool_calls) > 1 and enable_parallel:
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        # All 3 start simultaneously
-        futures = [
-            executor.submit(research_flights, ...),
-            executor.submit(research_accommodations, ...),
-            executor.submit(research_activities, ...)
-        ]
-        # Wait for all to complete
-        results = [f.result() for f in futures]
+# Multiple tools called together in one iteration
+with ThreadPoolExecutor(max_workers=len(tool_calls)) as executor:
+    futures = [
+        executor.submit(research_flights, ...),
+        executor.submit(research_accommodations, ...),
+        executor.submit(research_activities, ...)
+    ]
+    # Wait for all to complete
+    results = [f.result() for f in futures]
 ```
 
 **Time savings example:**

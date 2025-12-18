@@ -328,9 +328,32 @@ class BudgetAgent:
             sections.append(f"\nPriorities: {priorities}")
 
         sections.append("\n## CURRENT SELECTIONS")
-        sections.append(json.dumps(current_selections, indent=2, default=str))
+        sections.append(json.dumps(self._sanitize_for_llm(current_selections), indent=2, default=str))
 
         return "\n".join(sections)
+
+    def _sanitize_for_llm(self, data: Any) -> Any:
+        if isinstance(data, dict):
+            sanitized: Dict[str, Any] = {}
+            for key, value in data.items():
+                if key == "image_base64":
+                    if value:
+                        sanitized["has_image"] = True
+                    continue
+                sanitized[key] = self._sanitize_for_llm(value)
+            return sanitized
+
+        if isinstance(data, list):
+            if len(data) > 30:
+                data = data[:30]
+            return [self._sanitize_for_llm(item) for item in data]
+
+        if isinstance(data, str):
+            if len(data) > 2000:
+                return data[:2000] + "..."
+            return data
+
+        return data
 
     def _parse_llm_response(self, content: str) -> Dict[str, Any]:
         """Parse LLM JSON response"""
@@ -490,6 +513,9 @@ class SafetyAgent:
     def __init__(self, config=None):
         self.config = config or get_config()
 
+        if not self.config.search.tavily_api_key and not self.config.app.mock_external_apis:
+            raise ValueError("TAVILY_API_KEY is required when MOCK_EXTERNAL_APIS=false")
+
         if self.config.search.tavily_api_key:
             print("SafetyAgent initialized with Tavily + LLM")
         else:
@@ -553,6 +579,9 @@ class SafetyAgent:
 
         except Exception as e:
             print(f"Tavily search failed: {str(e)}")
+
+        if not self.config.app.mock_external_apis and not all_content:
+            raise ValueError("Failed to fetch safety information from Tavily (no results).")
 
         # Use LLM to extract structured safety info
         extracted = self._extract_with_llm(destination, all_content)
@@ -626,6 +655,9 @@ class TransportAgent:
     def __init__(self, config=None):
         self.config = config or get_config()
 
+        if not self.config.search.tavily_api_key and not self.config.app.mock_external_apis:
+            raise ValueError("TAVILY_API_KEY is required when MOCK_EXTERNAL_APIS=false")
+
         if self.config.search.tavily_api_key:
             print("TransportAgent initialized with Tavily + LLM")
         else:
@@ -688,6 +720,9 @@ class TransportAgent:
 
         except Exception as e:
             print(f"Tavily search failed: {str(e)}")
+
+        if not self.config.app.mock_external_apis and not all_content:
+            raise ValueError("Failed to fetch transport information from Tavily (no results).")
 
         # Use LLM to extract structured transport info
         extracted = self._extract_with_llm(destination, all_content)
