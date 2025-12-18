@@ -61,37 +61,35 @@ class SummaryResult:
 
 ITINERARY_SYSTEM_PROMPT = """You are a travel itinerary planning expert. Create a detailed day-by-day itinerary based on the provided research data.
 
+## CRITICAL: UNIQUENESS RULE (HIGHEST PRIORITY)
+
+**Before generating the itinerary, mentally allocate unique items for each day:**
+- For an N-day trip, you need N different breakfast spots, N different lunch restaurants, N different dinner restaurants
+- Count the available restaurants and activities in the research data
+- Assign EXACTLY ONE unique restaurant to each meal slot across all days
+- Assign EXACTLY ONE unique activity/attraction to each time slot - never revisit
+
+**VIOLATION CHECK**: If "Sushi Zanmai" appears on Day 1 dinner, it CANNOT appear on Day 2, Day 3, or any other day for ANY meal. Same for "Ichiran Ramen" or any other restaurant/attraction.
+
 ## Key Guidelines
 
 1. **Use Research Data**: Use ONLY data from the provided research (activities, restaurants, flights, hotels)
 
-2. **NO DUPLICATES - CRITICAL** (You MUST follow this):
-   - NEVER repeat the same restaurant name across different days
-   - NEVER repeat the same activity/attraction name across different days
-   - Each breakfast MUST be at a DIFFERENT restaurant or location each day
-   - Each lunch MUST be at a DIFFERENT restaurant each day
-   - Each dinner MUST be at a DIFFERENT restaurant each day
-   - Visit each attraction/activity ONLY ONCE in the entire trip
-   - "Breakfast at hotel" counts as ONE option - vary breakfast locations
-   - Generic activities like "Return to Hotel" are OK to repeat, but actual attractions/restaurants are NOT
-
-3. **Realistic Scheduling**:
+2. **Realistic Scheduling**:
    - Allow travel time between locations
    - Breakfast: 7:00-9:00 AM | Lunch: 12:00-1:30 PM | Dinner: 6:30-8:00 PM (adjust for local culture)
    - Don't overschedule - include buffer time
 
-4. **Detailed Descriptions** (see schema descriptions for format):
+3. **Detailed Descriptions** (see schema descriptions for format):
    - FLIGHTS: Airport arrival time, passport reminder, duration, transport from airport with costs
    - ATTRACTIONS: What to experience, opening hours, transport with costs
    - MEALS: Use restaurant data - name, dishes, price per person, reservation/wait info
 
-5. **Restaurants**: If restaurant research data is provided, use actual restaurants near each day's area. Ensure variety - no restaurant should appear twice.
-
-6. **Cost Accuracy**:
+4. **Cost Accuracy**:
    - Use actual prices from research data
    - Sum: flights + (hotel × nights) + activities + meals + transport
 
-7. **Respect Constraints**: Stay within budget, honor hard constraints
+5. **Respect Constraints**: Stay within budget, honor hard constraints
 
 The response schema has detailed descriptions for each field - follow those exactly.
 """
@@ -131,6 +129,9 @@ class ItineraryAgent:
             content = self._extract_llm_content(response)
             itinerary_data = self._parse_llm_response(content)
             normalized = self._normalize_itinerary_data(itinerary_data)
+
+            # Fix duplicate meals by replacing with unused alternatives
+            normalized = self._fix_duplicate_meals(normalized, context)
 
             # Extract flight and hotel info for output
             flights = self._extract_flights(context)
@@ -384,6 +385,170 @@ class ItineraryAgent:
             raise ValueError("summary must be a string")
 
         return normalized
+
+    def _fix_duplicate_meals(
+        self,
+        itinerary_data: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Post-process itinerary to ensure each restaurant only appears ONCE
+        in the entire trip. Travelers want to explore different dining options!
+
+        Uses fuzzy matching to handle variations like:
+        - "Afuri Ramen" vs "Afuri Ramen - Ebisu"
+        - "Sushi Zanmai" vs "Sushi Zanmai (famous for fresh fish)"
+        """
+        import re
+
+        # Get available restaurants from context - check multiple possible keys
+        available_restaurants: List[Dict[str, Any]] = []
+        for item in context.get("research", []):
+            if item.get("type") == "restaurants":
+                # Try "restaurants" key first, then combine from meal options
+                available_restaurants = item.get("restaurants", [])
+                if not available_restaurants:
+                    # Fallback: combine from breakfast/lunch/dinner options
+                    available_restaurants = []
+                    available_restaurants.extend(item.get("breakfast_options", []))
+                    available_restaurants.extend(item.get("lunch_options", []))
+                    available_restaurants.extend(item.get("dinner_options", []))
+                break
+
+        if not available_restaurants:
+            print("  Warning: No restaurant data found for duplicate fix")
+            return itinerary_data
+
+        # Map of normalized name -> full restaurant data
+        # Key is lowercase with extra whitespace removed
+        restaurant_map: Dict[str, Dict[str, Any]] = {}
+        restaurant_names_lower: List[str] = []  # For fuzzy matching
+        for r in available_restaurants:
+            name = r.get("name", "")
+            if name:
+                normalized = " ".join(name.lower().split())  # Normalize whitespace
+                restaurant_map[normalized] = r
+                restaurant_names_lower.append(normalized)
+
+        def find_canonical_restaurant(location: str) -> Optional[str]:
+            """
+            Find the canonical restaurant name from research data that matches
+            the location string extracted from the itinerary.
+
+            Handles variations like:
+            - Exact match: "afuri ramen" matches "afuri ramen"
+            - Prefix match: "afuri ramen - ebisu" matches "afuri ramen"
+            - Contains match: "dinner at afuri ramen famous for yuzu" matches "afuri ramen"
+            """
+            location = " ".join(location.lower().split())  # Normalize whitespace
+
+            # 1. Exact match
+            if location in restaurant_map:
+                return location
+
+            # 2. Check if any known restaurant name is a prefix of the location
+            for name in restaurant_names_lower:
+                if location.startswith(name):
+                    return name
+
+            # 3. Check if any known restaurant name is contained in the location
+            for name in restaurant_names_lower:
+                if name in location:
+                    return name
+
+            # 4. Check if location is contained in any known restaurant name
+            for name in restaurant_names_lower:
+                if location in name:
+                    return name
+
+            return None
+
+        # Track restaurants used GLOBALLY by canonical name
+        used_restaurants: set = set()  # canonical restaurant names (lowercase)
+        meal_entries: List[tuple] = []  # (day_idx, item_idx, meal_type, canonical_name or None, original_activity)
+
+        # First pass: identify all meal activities and their canonical restaurant names
+        days = itinerary_data.get("days", [])
+        for day_idx, day in enumerate(days):
+            schedule = day.get("schedule", [])
+
+            for item_idx, item in enumerate(schedule):
+                activity = item.get("activity", "")
+                activity_lower = activity.lower()
+
+                # Check if this is a meal activity
+                for meal_type in ["breakfast", "lunch", "dinner"]:
+                    if activity_lower.startswith(meal_type):
+                        # Extract location after "at "
+                        match = re.search(rf'{meal_type}\s+at\s+(.+)', activity_lower)
+                        if match:
+                            location = match.group(1).strip()
+                            canonical = find_canonical_restaurant(location)
+                            meal_entries.append((day_idx, item_idx, meal_type, canonical, activity))
+                        break
+
+        # Second pass: identify duplicates and fix them
+        duplicates_fixed = 0
+
+        # Track all restaurant strings we've seen (for unknown restaurants)
+        all_seen_locations: set = set()
+
+        for day_idx, item_idx, meal_type, canonical, original_activity in meal_entries:
+            # Extract location for unknown restaurant tracking
+            activity_lower = original_activity.lower()
+            match = re.search(rf'{meal_type}\s+at\s+(.+)', activity_lower)
+            raw_location = match.group(1).strip() if match else ""
+
+            # If unknown restaurant, check for raw location duplicates
+            if canonical is None:
+                if raw_location and raw_location in all_seen_locations:
+                    # This unknown restaurant was already used - replace with generic
+                    item = days[day_idx]["schedule"][item_idx]
+                    day_num = days[day_idx].get("day", day_idx + 1)
+                    item["activity"] = f"{meal_type.capitalize()} - Local restaurant near Day {day_num} area"
+                    print(f"    Replaced unknown duplicate '{raw_location}' with generic")
+                    duplicates_fixed += 1
+                else:
+                    all_seen_locations.add(raw_location)
+                continue
+
+            # Track the canonical name as seen
+            all_seen_locations.add(canonical)
+
+            if canonical in used_restaurants:
+                # This restaurant was already used - need to replace
+                # Find an unused restaurant
+                replacement = None
+                for name, data in restaurant_map.items():
+                    if name not in used_restaurants:
+                        replacement = data
+                        used_restaurants.add(name)
+                        break
+
+                item = days[day_idx]["schedule"][item_idx]
+                if replacement:
+                    new_activity = f"{meal_type.capitalize()} at {replacement['name']}"
+                    item["activity"] = new_activity
+                    if replacement.get("cuisine_type"):
+                        old_notes = item.get("notes", "")
+                        item["notes"] = f"{replacement['cuisine_type']} cuisine. {old_notes}".strip()
+                    print(f"    Replaced duplicate '{canonical}' with '{replacement['name']}'")
+                else:
+                    # No unused restaurant available - use a generic description
+                    day_num = days[day_idx].get("day", day_idx + 1)
+                    item["activity"] = f"{meal_type.capitalize()} - Local restaurant near Day {day_num} area"
+                    print(f"    Replaced duplicate '{canonical}' with generic (no alternatives)")
+                duplicates_fixed += 1
+            else:
+                # First occurrence - mark as used
+                used_restaurants.add(canonical)
+
+        if duplicates_fixed > 0:
+            print(f"  Fixed {duplicates_fixed} duplicate restaurant entries.")
+        else:
+            print(f"  No duplicate restaurants found (checked {len(meal_entries)} meals)")
+
+        return itinerary_data
 
     def _strip_base64_from_data(self, data: Any) -> Any:
         if isinstance(data, dict):

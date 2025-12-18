@@ -150,6 +150,10 @@ TOOL_DEFINITIONS = [
                     "max_budget_per_person": {
                         "type": "number",
                         "description": "Maximum budget per person per meal in USD"
+                    },
+                    "num_days": {
+                        "type": "integer",
+                        "description": "Number of days for the trip (to determine how many unique restaurants are needed)"
                     }
                 },
                 "required": ["destination"]

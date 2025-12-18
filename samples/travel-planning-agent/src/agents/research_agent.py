@@ -531,7 +531,8 @@ class ResearchAgent:
         destination: str,
         areas: Optional[List[str]] = None,
         cuisine_types: Optional[List[str]] = None,
-        max_budget_per_person: Optional[float] = None
+        max_budget_per_person: Optional[float] = None,
+        num_days: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Research restaurants and dining options
@@ -541,6 +542,7 @@ class ResearchAgent:
             areas: Specific areas/neighborhoods to search
             cuisine_types: Types of cuisine to search for
             max_budget_per_person: Maximum budget per person
+            num_days: Number of days for the trip
 
         Returns:
             Dictionary with restaurant options grouped by area and meal type
@@ -551,7 +553,8 @@ class ResearchAgent:
             destination=destination,
             areas=areas,
             cuisine_types=cuisine_types,
-            max_budget=max_budget_per_person
+            max_budget=max_budget_per_person,
+            num_days=num_days
         )
 
         return result

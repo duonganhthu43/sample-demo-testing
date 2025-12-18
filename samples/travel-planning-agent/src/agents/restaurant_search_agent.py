@@ -84,11 +84,12 @@ class RestaurantSearchAgent:
     """Intelligent agent for searching restaurants."""
 
     MAX_TAVILY_CALLS = 15
-    MIN_RESTAURANTS_REQUIRED = 8
+    DEFAULT_MIN_RESTAURANTS = 12  # Default for 5-day trip
 
     def __init__(self, config=None):
         self.config = config or get_config()
         self._reset_state()
+        self.min_restaurants_required = self.DEFAULT_MIN_RESTAURANTS
 
     def _reset_state(self):
         self.content_list: List[str] = []
@@ -103,30 +104,43 @@ class RestaurantSearchAgent:
         destination: str,
         areas: Optional[List[str]] = None,
         cuisine_types: Optional[List[str]] = None,
-        meal_type: Optional[str] = None
+        meal_type: Optional[str] = None,
+        num_days: Optional[int] = None
     ) -> Dict[str, Any]:
         """Search for restaurants using the agent."""
         self._reset_state()
 
-        print(f"  RestaurantSearchAgent: Searching restaurants in {destination}")
+        # Calculate minimum restaurants based on trip duration
+        # For 3 meals per day, we need at least num_days * 2 unique restaurants
+        # (allowing some flexibility for hotel breakfasts, etc.)
+        if num_days:
+            self.min_restaurants_required = max(num_days * 2, 8)
+        else:
+            self.min_restaurants_required = self.DEFAULT_MIN_RESTAURANTS
+
+        print(f"  RestaurantSearchAgent: Searching restaurants in {destination} (min: {self.min_restaurants_required})")
 
         areas_str = ", ".join(areas) if areas else "various areas"
         cuisine_str = ", ".join(cuisine_types) if cuisine_types else "local and international cuisine"
 
-        system_prompt = """You are a restaurant search agent. Find dining options at a destination.
+        min_req = self.min_restaurants_required
+        system_prompt = f"""You are a restaurant search agent. Find FAMOUS and HIGHLY-RATED dining options at a destination.
 
 ## Strategy
-1. Start with best restaurants and local food guides
-2. Search for specific cuisine types if requested
-3. Search for restaurants in specific areas/neighborhoods
-4. Extract data after 2-3 searches to check variety
-5. If lacking cuisine variety or price ranges, do targeted searches
-6. Call finish when you have at least 8-10 diverse restaurants
+1. Start with "best restaurants", "must-try restaurants", "famous local food"
+2. Search for award-winning restaurants, Michelin guide recommendations
+3. Search for iconic local cuisine spots that travelers should not miss
+4. Search for different cuisine types (local, Japanese, international)
+5. Extract data after 2-3 searches, if < {min_req} restaurants, do more searches
+6. Search specific categories: breakfast spots, lunch cafes, dinner restaurants
+7. Call finish when you have at least {min_req} diverse, FAMOUS restaurants
 
 ## Success Criteria
-- At least 8 restaurants covering different cuisines and price ranges
-- Include local specialties and popular tourist restaurants
-- Mix of budget-friendly and upscale options"""
+- At least {min_req} restaurants (travelers need variety for their trip)
+- Focus on FAMOUS, WELL-REVIEWED restaurants worth traveling to try
+- Include iconic local specialties and popular tourist favorites
+- Mix of breakfast, lunch, and dinner suitable restaurants
+- Include price variety: budget-friendly, mid-range, and fine dining"""
 
         user_prompt = f"""Find restaurant options:
 
@@ -246,14 +260,17 @@ Search for restaurants, dining options, and food recommendations."""
         print(f"  Agent extracting restaurants: {reason}")
 
         try:
-            system_prompt = """You are a restaurant data extraction assistant. Extract restaurant information from search results.
+            system_prompt = """You are a restaurant data extraction assistant. Extract ALL restaurant information from search results.
+
+## CRITICAL: Extract as many restaurants as possible (aim for 10-15+ per extraction)
 
 ## Guidelines
-1. Extract real restaurant names, cuisine types, and practical details
-2. Prices in USD per person
-3. Ratings out of 5.0
-4. Include specialty dishes and opening hours
-5. Categorize by meal suitability (breakfast, lunch, dinner)"""
+1. Extract EVERY restaurant name mentioned, even if details are partial
+2. Prices in USD per person (estimate if not explicit)
+3. Ratings out of 5.0 (estimate 4.0 if not given)
+4. Include specialty dishes and opening hours when available
+5. Categorize by meal suitability (breakfast, lunch, dinner)
+6. Don't skip restaurants just because some info is missing - include them anyway"""
 
             truncated = []
             total_chars = 0
@@ -273,7 +290,8 @@ Search for restaurants, dining options, and food recommendations."""
 {json.dumps(self.sources[:10], indent=2)}
 
 ## Task
-Extract all restaurants. Include names, cuisine types, prices, ratings, and specialty dishes."""
+Extract ALL restaurants mentioned (aim for 10-15+). Include names, cuisine types, prices, ratings, and specialty dishes.
+For missing info: estimate price range based on cuisine type, use 4.0 rating if unknown."""
 
             client = self.config.get_llm_client(label="restaurant_extraction")
 
@@ -286,7 +304,7 @@ Extract all restaurants. Include names, cuisine types, prices, ratings, and spec
                     ],
                     response_format=get_response_format("restaurant_search", RESTAURANT_SEARCH_SCHEMA),
                     temperature=0.2,
-                    max_tokens=3000,
+                    max_tokens=4000,  # Increased for more restaurants
                 )
             except Exception as e:
                 if "response_format" in str(e).lower():
@@ -297,7 +315,7 @@ Extract all restaurants. Include names, cuisine types, prices, ratings, and spec
                             {"role": "user", "content": user_content},
                         ],
                         temperature=0.2,
-                        max_tokens=3000,
+                        max_tokens=4000,  # Increased for more restaurants
                     )
                 else:
                     raise
@@ -320,8 +338,25 @@ Extract all restaurants. Include names, cuisine types, prices, ratings, and spec
             # Add image suggestions
             self._add_image_suggestions(data.get("restaurants", []))
 
-            self.extracted_data = data
-            restaurants_count = len(data.get("restaurants", []))
+            # Accumulate restaurants across extractions (don't overwrite)
+            if self.extracted_data is None:
+                self.extracted_data = {"restaurants": [], "by_meal_type": {"breakfast": [], "lunch": [], "dinner": []}}
+
+            # Merge new restaurants, avoiding duplicates by name
+            existing_names = {r.get("name", "").lower() for r in self.extracted_data.get("restaurants", [])}
+            for restaurant in data.get("restaurants", []):
+                name = restaurant.get("name", "").lower()
+                if name and name not in existing_names:
+                    self.extracted_data["restaurants"].append(restaurant)
+                    existing_names.add(name)
+
+            # Merge by_meal_type if present
+            for meal_type in ["breakfast", "lunch", "dinner"]:
+                existing = self.extracted_data.get("by_meal_type", {}).get(meal_type, [])
+                new_meals = data.get("by_meal_type", {}).get(meal_type, [])
+                self.extracted_data["by_meal_type"][meal_type] = list(set(existing + new_meals))
+
+            restaurants_count = len(self.extracted_data.get("restaurants", []))
 
             print(f"  Extracted {restaurants_count} restaurants")
 
@@ -333,10 +368,10 @@ Extract all restaurants. Include names, cuisine types, prices, ratings, and spec
                 "restaurants_found": restaurants_count,
                 "cuisine_types_found": len(cuisines),
                 "cuisines": list(cuisines),
-                "data_quality": "good" if restaurants_count >= self.MIN_RESTAURANTS_REQUIRED else "needs_more",
+                "data_quality": "good" if restaurants_count >= self.min_restaurants_required else "needs_more",
                 "suggestion": (
                     "Data looks good! Call finish with status='success'"
-                    if restaurants_count >= self.MIN_RESTAURANTS_REQUIRED
+                    if restaurants_count >= self.min_restaurants_required
                     else f"Only {restaurants_count} restaurants. Consider more cuisine-specific searches."
                 )
             }
@@ -372,7 +407,8 @@ class RestaurantSearchTool:
         areas: Optional[List[str]] = None,
         cuisine_types: Optional[List[str]] = None,
         meal_type: Optional[str] = None,
-        max_budget: Optional[float] = None
+        max_budget: Optional[float] = None,
+        num_days: Optional[int] = None
     ) -> Dict[str, Any]:
         cache_key = f"{destination.lower()}_{meal_type or 'all'}"
 
@@ -382,7 +418,7 @@ class RestaurantSearchTool:
 
         print(f"Searching restaurants in {destination} via Agent...")
 
-        result = self.agent.search(destination, areas, cuisine_types, meal_type)
+        result = self.agent.search(destination, areas, cuisine_types, meal_type, num_days)
 
         # Download images for restaurants using item-specific search
         self._assign_images(result.get("restaurants", []), destination)
