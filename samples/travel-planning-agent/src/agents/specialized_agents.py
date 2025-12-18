@@ -272,13 +272,13 @@ class BudgetAgent:
         """
         print(f"Optimizing budget with LLM (limit: ${budget_limit})")
 
-        # Prepare context for LLM
-        context = self._prepare_budget_context(current_selections, budget_limit, priorities)
-
         # Get LLM client
         client = self.config.get_llm_client(label="budget_agent")
 
         try:
+            # Build structured user content for better LLM understanding
+            user_content = self._build_budget_content(current_selections, budget_limit, priorities)
+
             response = client.chat.completions.create(
                 model=self.config.llm.model,
                 messages=[
@@ -288,7 +288,7 @@ class BudgetAgent:
                     },
                     {
                         "role": "user",
-                        "content": f"Optimize this travel budget:\n\n{context}"
+                        "content": user_content  # Array of {"type": "text", "text": ...}
                     }
                 ],
                 temperature=0.3,
@@ -312,25 +312,45 @@ class BudgetAgent:
             print(f"LLM budget optimization failed: {str(e)}")
             return self._fallback_optimize(current_selections, budget_limit)
 
-    def _prepare_budget_context(
+    def _build_budget_content(
         self,
         current_selections: Dict,
         budget_limit: float,
         priorities: Optional[List[str]]
-    ) -> str:
-        """Prepare context for budget optimization"""
-        sections = []
+    ) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for budget optimization.
 
-        sections.append("## BUDGET LIMIT")
-        sections.append(f"Maximum budget: ${budget_limit}")
+        Returns an array of content parts for better LLM understanding:
+        - Separates budget limit, priorities, and selections into distinct parts
+        - Uses JSON for structured data
+        """
+        content_parts = []
 
+        # Part 1: Budget constraint
+        budget_data = {"budget_limit": budget_limit}
         if priorities:
-            sections.append(f"\nPriorities: {priorities}")
+            budget_data["priorities"] = priorities
 
-        sections.append("\n## CURRENT SELECTIONS")
-        sections.append(json.dumps(self._sanitize_for_llm(current_selections), indent=2, default=str))
+        content_parts.append({
+            "type": "text",
+            "text": f"## Budget Constraint\n\n```json\n{json.dumps(budget_data, indent=2)}\n```"
+        })
 
-        return "\n".join(sections)
+        # Part 2: Current selections as JSON
+        sanitized_selections = self._sanitize_for_llm(current_selections)
+        content_parts.append({
+            "type": "text",
+            "text": f"## Current Selections\n\n```json\n{json.dumps(sanitized_selections, indent=2, default=str)}\n```"
+        })
+
+        # Part 3: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nOptimize this travel budget to fit within the limit while maintaining quality."
+        })
+
+        return content_parts
 
     def _sanitize_for_llm(self, data: Any) -> Any:
         if isinstance(data, dict):
@@ -430,7 +450,8 @@ class WeatherAgent:
         )
 
         # Use LLM to generate intelligent advisory and packing suggestions
-        context = self._prepare_weather_context(destination, forecast, num_days)
+        # Build structured content array for better LLM understanding
+        user_content = self._build_weather_content(destination, forecast, num_days)
 
         client = self.config.get_llm_client(label="weather_agent")
 
@@ -444,7 +465,7 @@ class WeatherAgent:
                     },
                     {
                         "role": "user",
-                        "content": f"Analyze this weather forecast and provide recommendations:\n\n{context}"
+                        "content": user_content  # Array of {"type": "text", "text": ...}
                     }
                 ],
                 temperature=0.3,
@@ -476,20 +497,50 @@ class WeatherAgent:
                 weather_advisory="Check local weather forecast before departure"
             )
 
-    def _prepare_weather_context(self, destination: str, forecast: Dict, num_days: int) -> str:
-        """Prepare context for weather analysis"""
-        sections = []
+    def _build_weather_content(
+        self,
+        destination: str,
+        forecast: Dict,
+        num_days: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for weather analysis.
 
-        sections.append(f"## DESTINATION: {destination}")
-        sections.append(f"Trip duration: {num_days} days")
+        Returns an array of content parts for better LLM understanding:
+        - Separates trip info from weather data
+        - Uses JSON for structured data
+        """
+        content_parts = []
 
-        sections.append("\n## WEATHER SUMMARY")
-        sections.append(json.dumps(forecast["summary"], indent=2))
+        # Part 1: Trip information
+        trip_info = {
+            "destination": destination,
+            "num_days": num_days
+        }
+        content_parts.append({
+            "type": "text",
+            "text": f"## Trip Information\n\n```json\n{json.dumps(trip_info, indent=2)}\n```"
+        })
 
-        sections.append("\n## DAILY FORECAST")
-        sections.append(json.dumps(forecast["daily_forecast"], indent=2))
+        # Part 2: Weather summary
+        content_parts.append({
+            "type": "text",
+            "text": f"## Weather Summary\n\n```json\n{json.dumps(forecast['summary'], indent=2)}\n```"
+        })
 
-        return "\n".join(sections)
+        # Part 3: Daily forecast
+        content_parts.append({
+            "type": "text",
+            "text": f"## Daily Forecast\n\n```json\n{json.dumps(forecast['daily_forecast'], indent=2)}\n```"
+        })
+
+        # Part 4: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nAnalyze this weather forecast and provide travel recommendations including weather advisory, packing suggestions, and activity recommendations."
+        })
+
+        return content_parts
 
     def _parse_llm_response(self, content: str) -> Dict[str, Any]:
         """Parse LLM JSON response"""
@@ -602,13 +653,8 @@ class SafetyAgent:
         try:
             client = self.config.get_llm_client(label="safety_agent")
 
-            if content_list:
-                combined_content = "\n\n---\n\n".join(content_list[:10])
-                if len(combined_content) > 8000:
-                    combined_content = combined_content[:8000] + "..."
-                prompt = f"Extract safety information for {destination} from these search results:\n\n{combined_content}"
-            else:
-                prompt = f"Based on your knowledge, provide safety information for {destination}. Include emergency contacts, safety tips, areas to avoid, health advisories, and scam warnings."
+            # Build structured user content for better LLM understanding
+            user_content = self._build_safety_content(destination, content_list)
 
             response = client.chat.completions.create(
                 model=self.config.llm.model,
@@ -619,7 +665,7 @@ class SafetyAgent:
                     },
                     {
                         "role": "user",
-                        "content": prompt
+                        "content": user_content  # Array of {"type": "text", "text": ...}
                     }
                 ],
                 temperature=0.2,
@@ -632,6 +678,54 @@ class SafetyAgent:
         except Exception as e:
             print(f"LLM extraction failed: {str(e)}")
             return {}
+
+    def _build_safety_content(
+        self,
+        destination: str,
+        content_list: List[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for safety extraction.
+
+        Returns an array of content parts for better LLM understanding:
+        - Separates destination from search results
+        - Uses JSON for structured data
+        """
+        content_parts = []
+
+        # Part 1: Destination context
+        content_parts.append({
+            "type": "text",
+            "text": f"## Destination\n\n{destination}"
+        })
+
+        # Part 2: Search results or fallback instruction
+        if content_list:
+            truncated_content = []
+            total_chars = 0
+            for content in content_list[:10]:
+                if total_chars + len(content) > 8000:
+                    break
+                truncated_content.append(content)
+                total_chars += len(content)
+
+            content_parts.append({
+                "type": "text",
+                "text": f"## Search Results\n\n```json\n{json.dumps(truncated_content, indent=2)}\n```"
+            })
+        else:
+            content_parts.append({
+                "type": "text",
+                "text": "## Note\n\nNo search results available. Please provide safety information based on your knowledge."
+            })
+
+        # Part 3: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nExtract safety information including emergency contacts, safety tips, areas to avoid, health advisories, and scam warnings."
+        })
+
+        return content_parts
 
     def _parse_llm_response(self, content: str) -> Dict[str, Any]:
         """Parse LLM JSON response"""
@@ -741,13 +835,8 @@ class TransportAgent:
         try:
             client = self.config.get_llm_client(label="transport_agent")
 
-            if content_list:
-                combined_content = "\n\n---\n\n".join(content_list[:10])
-                if len(combined_content) > 8000:
-                    combined_content = combined_content[:8000] + "..."
-                prompt = f"Extract transport information for {destination} from these search results:\n\n{combined_content}"
-            else:
-                prompt = f"Based on your knowledge, provide transport information for {destination}. Include public transport options, tourist passes, airport transfer options, and practical tips."
+            # Build structured content array for better LLM understanding
+            user_content = self._build_transport_content(destination, content_list)
 
             response = client.chat.completions.create(
                 model=self.config.llm.model,
@@ -758,7 +847,7 @@ class TransportAgent:
                     },
                     {
                         "role": "user",
-                        "content": prompt
+                        "content": user_content  # Array of {"type": "text", "text": ...}
                     }
                 ],
                 temperature=0.2,
@@ -771,6 +860,54 @@ class TransportAgent:
         except Exception as e:
             print(f"LLM extraction failed: {str(e)}")
             return {}
+
+    def _build_transport_content(
+        self,
+        destination: str,
+        content_list: List[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for transport extraction.
+
+        Returns an array of content parts for better LLM understanding:
+        - Separates destination from search results
+        - Uses JSON for structured data
+        """
+        content_parts = []
+
+        # Part 1: Destination context
+        content_parts.append({
+            "type": "text",
+            "text": f"## Destination\n\n{destination}"
+        })
+
+        # Part 2: Search results or fallback instruction
+        if content_list:
+            truncated_content = []
+            total_chars = 0
+            for content in content_list[:10]:
+                if total_chars + len(content) > 8000:
+                    break
+                truncated_content.append(content)
+                total_chars += len(content)
+
+            content_parts.append({
+                "type": "text",
+                "text": f"## Search Results\n\n```json\n{json.dumps(truncated_content, indent=2)}\n```"
+            })
+        else:
+            content_parts.append({
+                "type": "text",
+                "text": "## Note\n\nNo search results available. Please provide transport information based on your knowledge."
+            })
+
+        # Part 3: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nExtract transport information including public transport options, tourist passes, airport transfers, and practical tips."
+        })
+
+        return content_parts
 
     def _parse_llm_response(self, content: str) -> Dict[str, Any]:
         """Parse LLM JSON response"""

@@ -267,20 +267,8 @@ class ResearchAgent:
             # Get LLM client
             llm_client = self.config.get_llm_client(label="research_extraction")
 
-            # Prepare structured input (limit to avoid token limits)
-            truncated_content = []
-            total_chars = 0
-            for content in content_list[:10]:
-                if total_chars + len(content) > 8000:
-                    break
-                truncated_content.append(content)
-                total_chars += len(content)
-
-            # Structure the input as JSON for cleaner separation of data and instructions
-            user_input = {
-                "destination": destination,
-                "search_results": truncated_content
-            }
+            # Build structured content array for better LLM understanding
+            user_content = self._build_extraction_content(destination, content_list)
 
             try:
                 response = llm_client.chat.completions.create(
@@ -292,7 +280,7 @@ class ResearchAgent:
                         },
                         {
                             "role": "user",
-                            "content": json.dumps(user_input)
+                            "content": user_content  # Array of {"type": "text", "text": ...}
                         }
                     ],
                     response_format={"type": "json_object"},
@@ -311,7 +299,7 @@ class ResearchAgent:
                             },
                             {
                                 "role": "user",
-                                "content": json.dumps(user_input)
+                                "content": user_content
                             }
                         ],
                         temperature=0.2,
@@ -326,6 +314,44 @@ class ResearchAgent:
         except Exception as e:
             print(f"LLM extraction failed: {str(e)}")
             return {}
+
+    def _build_extraction_content(self, destination: str, content_list: List[str]) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for destination extraction.
+
+        Returns an array of content parts for better LLM understanding:
+        - Separates destination context from search results
+        - Uses JSON for structured data
+        """
+        content_parts = []
+
+        # Part 1: Destination context
+        content_parts.append({
+            "type": "text",
+            "text": f"## Destination\n\n{destination}"
+        })
+
+        # Part 2: Search results as JSON (truncated to avoid token limits)
+        truncated_content = []
+        total_chars = 0
+        for content in content_list[:10]:
+            if total_chars + len(content) > 8000:
+                break
+            truncated_content.append(content)
+            total_chars += len(content)
+
+        content_parts.append({
+            "type": "text",
+            "text": f"## Search Results\n\n```json\n{json.dumps(truncated_content, indent=2)}\n```"
+        })
+
+        # Part 3: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nExtract structured travel information from the search results above."
+        })
+
+        return content_parts
 
     def _parse_llm_response(self, content: str) -> Dict[str, Any]:
         """Parse LLM JSON response"""

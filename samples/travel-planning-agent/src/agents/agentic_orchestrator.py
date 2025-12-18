@@ -91,13 +91,13 @@ class TravelPlanningOrchestrator:
         llm_client = self.config.get_llm_client(label="travel_orchestrator")
         llm_params = self.config.get_llm_params()
 
-        # Build initial prompt
-        user_prompt = self._build_initial_prompt(task, constraints)
+        # Build initial prompt as structured content array
+        user_content = self._build_initial_prompt(task, constraints)
 
-        # Initialize conversation
+        # Initialize conversation with array-structured user message
         messages = [
             {"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_content}  # Array of {"type": "text", "text": ...}
         ]
 
         # Agentic loop
@@ -264,43 +264,56 @@ class TravelPlanningOrchestrator:
 
         return data
 
-    def _build_initial_prompt(self, task: str, constraints: Dict[str, Any]) -> str:
-        """Build the initial user prompt"""
-        prompt_parts = [
-            f"## Travel Planning Request\n\n{task}\n"
-        ]
+    def _build_initial_prompt(self, task: str, constraints: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Build the initial user prompt as structured content array.
 
+        Returns an array of content parts for better LLM understanding:
+        - Separates task, constraints, and instructions into distinct parts
+        - Uses JSON for structured constraint data
+        - Enables future multimodal content (images)
+        """
+        content_parts = []
+
+        # Part 1: Task description
+        content_parts.append({
+            "type": "text",
+            "text": f"## Travel Planning Request\n\n{task}"
+        })
+
+        # Part 2: Constraints as structured JSON
         if constraints:
-            prompt_parts.append("## Constraints\n")
+            constraint_data = {
+                "budget": constraints.get("budget"),
+                "departure_city": constraints.get("departure_city"),
+                "travel_dates": constraints.get("travel_dates"),
+                "preferences": constraints.get("preferences", []),
+                "hard_constraints": constraints.get("hard_constraints", [])
+            }
+            # Remove None values
+            constraint_data = {k: v for k, v in constraint_data.items() if v}
 
-            if "budget" in constraints:
-                prompt_parts.append(f"- **Budget**: {constraints['budget']}")
+            content_parts.append({
+                "type": "text",
+                "text": f"## Constraints\n\n```json\n{json.dumps(constraint_data, indent=2)}\n```"
+            })
 
-            if "departure_city" in constraints:
-                prompt_parts.append(f"- **Departure City**: {constraints['departure_city']}")
+        # Part 3: Instructions
+        instructions = """## Instructions
 
-            if "travel_dates" in constraints:
-                prompt_parts.append(f"- **Travel Dates**: {constraints['travel_dates']}")
+Please research and plan this trip using the available tools.
+Start by researching the destination, then find flights and accommodations,
+research activities, and finally generate a comprehensive itinerary.
+Also analyze the weather for the trip dates.
+Always run budget optimization and schedule optimization before generating the itinerary.
+Ensure all hard constraints are met and try to satisfy preferences."""
 
-            if "preferences" in constraints:
-                prompt_parts.append("\n### Preferences (nice-to-have):")
-                for pref in constraints["preferences"]:
-                    prompt_parts.append(f"- {pref}")
+        content_parts.append({
+            "type": "text",
+            "text": instructions
+        })
 
-            if "hard_constraints" in constraints:
-                prompt_parts.append("\n### Hard Constraints (must be met):")
-                for hc in constraints["hard_constraints"]:
-                    prompt_parts.append(f"- {hc}")
-
-        prompt_parts.append("\n\n## Instructions")
-        prompt_parts.append("Please research and plan this trip using the available tools.")
-        prompt_parts.append("Start by researching the destination, then find flights and accommodations,")
-        prompt_parts.append("research activities, and finally generate a comprehensive itinerary.")
-        prompt_parts.append("Also analyze the weather for the trip dates.")
-        prompt_parts.append("Always run budget optimization and schedule optimization before generating the itinerary.")
-        prompt_parts.append("Ensure all hard constraints are met and try to satisfy preferences.")
-
-        return "\n".join(prompt_parts)
+        return content_parts
 
     def _extract_destination(self, task: str) -> str:
         """Extract destination from task description"""

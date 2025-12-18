@@ -5,7 +5,7 @@ Uses LLM to format itinerary data into professional markdown output
 
 import json
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Dict, List, Any, Optional
 
 from ..utils.config import get_config
 
@@ -151,8 +151,8 @@ class PresentationAgent:
         # Build image registry for post-processing (keeps base64 out of LLM context)
         image_registry = self._build_image_registry(context)
 
-        # Prepare the data for the LLM (without base64 data)
-        data_summary = self._prepare_data_summary(itinerary, context)
+        # Build structured content array for better LLM understanding
+        user_content = self._build_presentation_content(itinerary, context)
 
         # Get LLM client
         client = self.config.get_llm_client(label="presentation_agent")
@@ -168,7 +168,7 @@ class PresentationAgent:
                     },
                     {
                         "role": "user",
-                        "content": f"Please format the following travel itinerary data into a professional markdown document:\n\n{data_summary}"
+                        "content": user_content  # Array of {"type": "text", "text": ...}
                     }
                 ],
                 temperature=0.3,  # Lower temperature for consistent formatting
@@ -191,108 +191,152 @@ class PresentationAgent:
                 markdown=self._fallback_format(itinerary, context)
             )
 
-    def _prepare_data_summary(
+    def _build_presentation_content(
         self,
         itinerary: Dict[str, Any],
         context: Dict[str, Any]
-    ) -> str:
-        """Prepare a structured summary of all data for the LLM"""
+    ) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for presentation formatting.
 
+        Returns an array of content parts for better LLM understanding:
+        - Separates trip details, itinerary, and context data
+        - Uses JSON for structured data
+        """
         # Ensure inputs are dicts, not None
         itinerary = itinerary or {}
         context = context or {}
 
-        sections = []
+        content_parts = []
 
-        # Basic info
-        sections.append("## TRIP DETAILS")
-        sections.append(f"Destination: {itinerary.get('destination', 'Unknown')}")
-        sections.append(f"Travel Dates: {itinerary.get('travel_dates', 'TBD')}")
-        sections.append(f"Total Estimated Cost: ${itinerary.get('total_estimated_cost', 0):,.0f} {itinerary.get('currency', 'USD')}")
-        sections.append(f"Number of Days: {len(itinerary.get('days', []))}")
-
-        # Note if hero image is available (don't pass actual base64 to save tokens)
+        # Part 1: Trip details as JSON
+        trip_details = {
+            "destination": itinerary.get("destination", "Unknown"),
+            "travel_dates": itinerary.get("travel_dates", "TBD"),
+            "total_estimated_cost": itinerary.get("total_estimated_cost", 0),
+            "currency": itinerary.get("currency", "USD"),
+            "num_days": len(itinerary.get("days", []))
+        }
+        # Note if hero image is available
         if self._get_hero_image(context):
-            sections.append(f"\n## DESTINATION HERO IMAGE")
-            sections.append(f"has_image: true (use IMAGE_PLACEHOLDER:hero)")
+            trip_details["has_hero_image"] = True
+            trip_details["hero_image_placeholder"] = "IMAGE_PLACEHOLDER:hero"
 
-        # Destination info
+        content_parts.append({
+            "type": "text",
+            "text": f"## Trip Details\n\n```json\n{json.dumps(trip_details, indent=2)}\n```"
+        })
+
+        # Part 2: Destination info
         dest_info = self._get_from_research(context, "destination")
         if dest_info:
-            sections.append("\n## DESTINATION INFO")
-            sections.append(f"Visa Requirements: {dest_info.get('visa_requirements', 'Check requirements')}")
-            sections.append(f"Language: {dest_info.get('language', 'Local language')}")
-            sections.append(f"Currency: {dest_info.get('currency', 'Local currency')}")
-            if dest_info.get('culture_tips'):
-                sections.append(f"Culture Tips: {', '.join(dest_info.get('culture_tips', [])[:3])}")
+            dest_data = {
+                "visa_requirements": dest_info.get("visa_requirements", "Check requirements"),
+                "language": dest_info.get("language", "Local language"),
+                "currency": dest_info.get("currency", "Local currency"),
+                "culture_tips": dest_info.get("culture_tips", [])[:3]
+            }
+            content_parts.append({
+                "type": "text",
+                "text": f"## Destination Info\n\n```json\n{json.dumps(dest_data, indent=2)}\n```"
+            })
 
-        # Flights
-        flights = itinerary.get('flights')
+        # Part 3: Flights
+        flights = itinerary.get("flights")
         if flights:
-            sections.append("\n## FLIGHT DATA")
-            sections.append(json.dumps(self._strip_base64_from_data(flights), indent=2, default=str))
+            content_parts.append({
+                "type": "text",
+                "text": f"## Flight Data\n\n```json\n{json.dumps(self._strip_base64_from_data(flights), indent=2, default=str)}\n```"
+            })
 
-        # Accommodation (strip base64 to save tokens, use has_image flag instead)
-        accommodation = itinerary.get('accommodation')
+        # Part 4: Accommodation
+        accommodation = itinerary.get("accommodation")
         if accommodation:
-            sections.append("\n## ACCOMMODATION DATA")
-            sections.append(json.dumps(self._strip_base64_from_data(accommodation), indent=2, default=str))
+            content_parts.append({
+                "type": "text",
+                "text": f"## Accommodation Data\n\n```json\n{json.dumps(self._strip_base64_from_data(accommodation), indent=2, default=str)}\n```"
+            })
 
-        # Daily itinerary (strip base64 to save tokens)
-        days = itinerary.get('days', [])
+        # Part 5: Daily itinerary
+        days = itinerary.get("days", [])
         if days:
-            sections.append("\n## DAILY ITINERARY")
-            sections.append(json.dumps(self._strip_base64_from_data(days), indent=2, default=str))
+            content_parts.append({
+                "type": "text",
+                "text": f"## Daily Itinerary\n\n```json\n{json.dumps(self._strip_base64_from_data(days), indent=2, default=str)}\n```"
+            })
 
-        # Cost analysis
+        # Part 6: Cost analysis
         cost_analysis = self._get_from_analysis(context, "cost")
         if cost_analysis:
-            sections.append("\n## COST BREAKDOWN")
-            sections.append(f"Breakdown: {json.dumps(cost_analysis.get('breakdown', {}), indent=2)}")
-            if cost_analysis.get('cost_saving_tips'):
-                sections.append(f"Saving Tips: {cost_analysis.get('cost_saving_tips')}")
+            cost_data = {
+                "breakdown": cost_analysis.get("breakdown", {}),
+                "cost_saving_tips": cost_analysis.get("cost_saving_tips", [])
+            }
+            content_parts.append({
+                "type": "text",
+                "text": f"## Cost Breakdown\n\n```json\n{json.dumps(cost_data, indent=2, default=str)}\n```"
+            })
 
-        # Weather
-        weather = context.get('weather', {})
+        # Part 7: Weather
+        weather = context.get("weather", {})
         if weather:
-            sections.append("\n## WEATHER")
-            summary = weather.get('summary', {})
-            sections.append(f"Average Temperature: {summary.get('average_temp', 'N/A')}°C")
-            sections.append(f"Rain Chance: {summary.get('average_rain_chance', 0)}%")
-            if weather.get('packing_suggestions'):
-                sections.append(f"Packing Suggestions: {weather.get('packing_suggestions')}")
+            summary = weather.get("summary", {})
+            weather_data = {
+                "average_temp": summary.get("average_temp", "N/A"),
+                "rain_chance": summary.get("average_rain_chance", 0),
+                "packing_suggestions": weather.get("packing_suggestions", [])
+            }
+            content_parts.append({
+                "type": "text",
+                "text": f"## Weather\n\n```json\n{json.dumps(weather_data, indent=2)}\n```"
+            })
 
-        # Packing list
-        packing = itinerary.get('packing_list', [])
+        # Part 8: Packing list & notes
+        extras = {}
+        packing = itinerary.get("packing_list", [])
         if packing:
-            sections.append("\n## PACKING LIST")
-            sections.append(str(packing))
-
-        # Important notes
-        notes = itinerary.get('important_notes', [])
+            extras["packing_list"] = packing
+        notes = itinerary.get("important_notes", [])
         if notes:
-            sections.append("\n## IMPORTANT NOTES")
-            for note in notes:
-                sections.append(f"- {note}")
+            extras["important_notes"] = notes
+        if extras:
+            content_parts.append({
+                "type": "text",
+                "text": f"## Additional Info\n\n```json\n{json.dumps(extras, indent=2)}\n```"
+            })
 
-        # Safety info
+        # Part 9: Safety info
         safety = self._get_from_specialized(context, "safety")
         if safety:
-            sections.append("\n## SAFETY INFO")
-            if safety.get('tips'):
-                sections.append(f"Tips: {safety.get('tips')[:3]}")
-            if safety.get('emergency_contacts'):
-                sections.append(f"Emergency: {safety.get('emergency_contacts')}")
+            safety_data = {
+                "tips": safety.get("tips", [])[:3],
+                "emergency_contacts": safety.get("emergency_contacts", {})
+            }
+            content_parts.append({
+                "type": "text",
+                "text": f"## Safety Info\n\n```json\n{json.dumps(safety_data, indent=2)}\n```"
+            })
 
-        # Constraints
-        constraints = context.get('constraints', {})
+        # Part 10: Constraints
+        constraints = context.get("constraints", {})
         if constraints:
-            sections.append("\n## USER CONSTRAINTS")
-            sections.append(f"Budget: {constraints.get('budget', 'Not specified')}")
-            sections.append(f"Preferences: {constraints.get('preferences', [])}")
-            sections.append(f"Hard Constraints: {constraints.get('hard_constraints', [])}")
+            constraint_data = {
+                "budget": constraints.get("budget", "Not specified"),
+                "preferences": constraints.get("preferences", []),
+                "hard_constraints": constraints.get("hard_constraints", [])
+            }
+            content_parts.append({
+                "type": "text",
+                "text": f"## User Constraints\n\n```json\n{json.dumps(constraint_data, indent=2)}\n```"
+            })
 
-        return "\n".join(sections)
+        # Part 11: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nFormat the travel itinerary data above into a professional markdown document."
+        })
+
+        return content_parts
 
     def _get_from_research(self, context: Dict, type_name: str) -> Dict:
         """Get item from research by type"""

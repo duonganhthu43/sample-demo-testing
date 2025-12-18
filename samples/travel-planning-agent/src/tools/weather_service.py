@@ -190,10 +190,6 @@ class WeatherService:
         num_days: int,
         content_list: List[str]
     ) -> Dict[str, Any]:
-        combined = "\n\n---\n\n".join(content_list[:10])
-        if len(combined) > 12000:
-            combined = combined[:12000] + "..."
-
         system_prompt = """You are a weather data extraction assistant.
 
 Extract a structured travel weather forecast from the provided search snippets.
@@ -225,6 +221,9 @@ Rules:
 - Use best-effort extraction; if a field isn't present, infer conservatively.
 """
 
+        # Build structured user content for better LLM understanding
+        user_content = self._build_weather_content(destination, start_date, num_days, content_list)
+
         client = self.config.get_llm_client(label="weather_service")
         try:
             response = client.chat.completions.create(
@@ -233,7 +232,7 @@ Rules:
                     {"role": "system", "content": system_prompt},
                     {
                         "role": "user",
-                        "content": f"Destination: {destination}\nStart date: {start_date}\nnum_days: {num_days}\n\nSnippets:\n{combined}",
+                        "content": user_content,  # Array of {"type": "text", "text": ...}
                     },
                 ],
                 response_format={"type": "json_object"},
@@ -249,7 +248,7 @@ Rules:
                         {"role": "system", "content": system_prompt},
                         {
                             "role": "user",
-                            "content": f"Destination: {destination}\nStart date: {start_date}\nnum_days: {num_days}\n\nSnippets:\n{combined}",
+                            "content": user_content,
                         },
                     ],
                     temperature=0.2,
@@ -274,6 +273,55 @@ Rules:
             raise ValueError("Invalid daily_forecast length")
 
         return data
+
+    def _build_weather_content(
+        self,
+        destination: str,
+        start_date: str,
+        num_days: int,
+        content_list: List[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for weather extraction.
+
+        Returns an array of content parts for better LLM understanding:
+        - Separates request parameters from search results
+        - Uses JSON for structured data
+        """
+        content_parts = []
+
+        # Part 1: Request parameters as JSON
+        request_data = {
+            "destination": destination,
+            "start_date": start_date,
+            "num_days": num_days
+        }
+        content_parts.append({
+            "type": "text",
+            "text": f"## Weather Request\n\n```json\n{json.dumps(request_data, indent=2)}\n```"
+        })
+
+        # Part 2: Search results (truncated to avoid token limits)
+        truncated_content = []
+        total_chars = 0
+        for content in content_list[:10]:
+            if total_chars + len(content) > 10000:
+                break
+            truncated_content.append(content)
+            total_chars += len(content)
+
+        content_parts.append({
+            "type": "text",
+            "text": f"## Search Snippets\n\n```json\n{json.dumps(truncated_content, indent=2)}\n```"
+        })
+
+        # Part 3: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nExtract weather forecast data from the search snippets above."
+        })
+
+        return content_parts
 
     def _generate_mock_forecast(
         self,

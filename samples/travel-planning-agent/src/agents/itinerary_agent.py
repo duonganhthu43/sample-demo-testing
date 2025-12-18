@@ -155,14 +155,14 @@ class ItineraryAgent:
         """
         print("Generating comprehensive itinerary with LLM...")
 
-        # Prepare context summary for LLM
-        context_summary = self._prepare_context_summary(context)
+        # Build structured content array for better LLM understanding
+        user_content = self._build_itinerary_content(context)
 
         # Get LLM client
         client = self.config.get_llm_client(label="itinerary_agent")
 
         try:
-            response = self._invoke_itinerary_llm(client, context_summary)
+            response = self._invoke_itinerary_llm(client, user_content)
             content = self._extract_llm_content(response)
             itinerary_data = self._parse_llm_response(content)
             normalized = self._normalize_itinerary_data(itinerary_data)
@@ -194,82 +194,120 @@ class ItineraryAgent:
             # Fallback to basic generation
             return self._fallback_generate(context)
 
-    def _prepare_context_summary(self, context: Dict[str, Any]) -> str:
-        """Prepare a structured summary of context for LLM"""
-        sections = []
+    def _build_itinerary_content(self, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for itinerary generation.
 
-        # Basic trip info
-        sections.append("## TRIP DETAILS")
-        sections.append(f"Destination: {context.get('destination', 'Unknown')}")
-        sections.append(f"Travel Dates: {context.get('travel_dates', 'TBD')}")
-        sections.append(f"Number of Days: {context.get('num_days', 5)}")
+        Returns an array of content parts for better LLM understanding:
+        - Separates trip details, research data, and constraints
+        - Uses JSON for structured data
+        """
+        content_parts = []
 
-        # Constraints
+        # Part 1: Trip details as JSON
+        trip_details = {
+            "destination": context.get("destination", "Unknown"),
+            "travel_dates": context.get("travel_dates", "TBD"),
+            "num_days": context.get("num_days", 5)
+        }
+        content_parts.append({
+            "type": "text",
+            "text": f"## Trip Details\n\n```json\n{json.dumps(trip_details, indent=2)}\n```"
+        })
+
+        # Part 2: Constraints as JSON
         constraints = context.get("constraints", {})
         if constraints:
-            sections.append("\n## CONSTRAINTS")
-            sections.append(f"Budget: {constraints.get('budget', 'Not specified')}")
-            sections.append(f"Preferences: {constraints.get('preferences', [])}")
-            sections.append(f"Hard Constraints: {constraints.get('hard_constraints', [])}")
+            constraint_data = {
+                "budget": constraints.get("budget", "Not specified"),
+                "preferences": constraints.get("preferences", []),
+                "hard_constraints": constraints.get("hard_constraints", [])
+            }
+            content_parts.append({
+                "type": "text",
+                "text": f"## Constraints\n\n```json\n{json.dumps(constraint_data, indent=2)}\n```"
+            })
 
-        # Research data
+        # Part 3: Research data
         research = context.get("research", [])
+        research_data = {}
         for item in research:
             item_type = item.get("type", "")
 
             if item_type == "destination":
-                sections.append("\n## DESTINATION INFO")
-                sections.append(f"Overview: {item.get('overview', '')[:300]}")
-                sections.append(f"Visa: {item.get('visa_requirements', 'Check requirements')}")
-                sections.append(f"Language: {item.get('language', '')}")
-                sections.append(f"Currency: {item.get('currency', '')}")
-                sections.append(f"Culture Tips: {item.get('cultural_tips', [])}")
-                sections.append(f"Local Cuisine: {item.get('local_cuisine', [])}")
+                research_data["destination_info"] = {
+                    "overview": item.get("overview", "")[:500],
+                    "visa_requirements": item.get("visa_requirements", "Check requirements"),
+                    "language": item.get("language", ""),
+                    "currency": item.get("currency", ""),
+                    "cultural_tips": item.get("cultural_tips", []),
+                    "local_cuisine": item.get("local_cuisine", [])
+                }
 
             elif item_type == "flights":
-                sections.append("\n## FLIGHT DATA")
-                sections.append(json.dumps({
+                research_data["flights"] = {
                     "best_outbound": item.get("best_outbound"),
                     "best_return": item.get("best_return"),
                     "outbound_options": item.get("outbound_options", [])[:3],
                     "return_options": item.get("return_options", [])[:3]
-                }, indent=2, default=str))
+                }
 
             elif item_type == "accommodations":
-                sections.append("\n## ACCOMMODATION DATA")
-                sections.append(json.dumps(self._strip_base64_from_data({
+                research_data["accommodations"] = self._strip_base64_from_data({
                     "best_value": item.get("best_value"),
                     "highest_rated": item.get("highest_rated"),
                     "options": item.get("hotels", [])[:5]
-                }), indent=2, default=str))
+                })
 
             elif item_type == "activities":
-                sections.append("\n## ACTIVITIES DATA")
-                sections.append(json.dumps(self._strip_base64_from_data({
+                research_data["activities"] = self._strip_base64_from_data({
                     "activities": item.get("activities", []),
                     "must_do": item.get("must_do", []),
                     "free_activities": item.get("free_activities", [])
-                }), indent=2, default=str))
+                })
 
-        # Weather
+        if research_data:
+            content_parts.append({
+                "type": "text",
+                "text": f"## Research Data\n\n```json\n{json.dumps(research_data, indent=2, default=str)}\n```"
+            })
+
+        # Part 4: Weather data
         weather = context.get("weather", {})
         if weather:
-            sections.append("\n## WEATHER")
             summary = weather.get("summary", {})
-            sections.append(f"Average Temp: {summary.get('average_temp', 'N/A')}°C")
-            sections.append(f"Rain Chance: {summary.get('average_rain_chance', 0)}%")
-            sections.append(f"Packing Suggestions: {weather.get('packing_suggestions', [])}")
+            weather_data = {
+                "average_temp": summary.get("average_temp", "N/A"),
+                "average_rain_chance": summary.get("average_rain_chance", 0),
+                "packing_suggestions": weather.get("packing_suggestions", [])
+            }
+            content_parts.append({
+                "type": "text",
+                "text": f"## Weather\n\n```json\n{json.dumps(weather_data, indent=2)}\n```"
+            })
 
-        # Cost analysis
+        # Part 5: Cost analysis
         for item in context.get("analysis", []):
             if item.get("type") == "cost":
-                sections.append("\n## COST ANALYSIS")
-                sections.append(f"Breakdown: {item.get('breakdown', {})}")
-                sections.append(f"Tips: {item.get('cost_saving_tips', [])}")
+                cost_data = {
+                    "breakdown": item.get("breakdown", {}),
+                    "cost_saving_tips": item.get("cost_saving_tips", [])
+                }
+                content_parts.append({
+                    "type": "text",
+                    "text": f"## Cost Analysis\n\n```json\n{json.dumps(cost_data, indent=2, default=str)}\n```"
+                })
+                break
 
-        return "\n".join(sections)
+        # Part 6: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nCreate a detailed day-by-day itinerary based on the research data above."
+        })
 
-    def _invoke_itinerary_llm(self, client: Any, context_summary: str) -> Any:
+        return content_parts
+
+    def _invoke_itinerary_llm(self, client: Any, user_content: List[Dict[str, Any]]) -> Any:
         try:
             return client.chat.completions.create(
                 model=self.config.llm.model,
@@ -280,10 +318,7 @@ class ItineraryAgent:
                     },
                     {
                         "role": "user",
-                        "content": (
-                            "Create a detailed day-by-day itinerary based on this "
-                            f"research data:\n\n{context_summary}"
-                        )
+                        "content": user_content  # Array of {"type": "text", "text": ...}
                     }
                 ],
                 response_format={"type": "json_object"},
@@ -303,10 +338,7 @@ class ItineraryAgent:
                         },
                         {
                             "role": "user",
-                            "content": (
-                                "Create a detailed day-by-day itinerary based on this "
-                                f"research data:\n\n{context_summary}"
-                            )
+                            "content": user_content  # Array of {"type": "text", "text": ...}
                         }
                     ],
                     temperature=0.3,

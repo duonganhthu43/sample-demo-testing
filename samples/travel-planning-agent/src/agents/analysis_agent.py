@@ -227,8 +227,8 @@ class AnalysisAgent:
         print(f"  Using base_url: {self.config.llm.base_url}")
         print(f"  Using model: {self.config.llm.model}")
 
-        # Prepare context for LLM
-        context = self._prepare_feasibility_context(itinerary, constraints)
+        # Build structured user content for better LLM understanding
+        user_content = self._build_feasibility_content(itinerary, constraints)
 
         # Get LLM client
         client = self.config.get_llm_client(label="analysis_agent_feasibility")
@@ -243,7 +243,7 @@ class AnalysisAgent:
                     },
                     {
                         "role": "user",
-                        "content": f"Analyze the feasibility of this travel itinerary:\n\n{context}"
+                        "content": user_content  # Array of {"type": "text", "text": ...}
                     }
                 ],
                 temperature=0.3,
@@ -293,8 +293,8 @@ class AnalysisAgent:
         """
         print("Analyzing cost breakdown with LLM...")
 
-        # Prepare context for LLM
-        context = self._prepare_cost_context(flights, hotels, activities, budget, num_days, currency)
+        # Build structured user content for better LLM understanding
+        user_content = self._build_cost_content(flights, hotels, activities, budget, num_days, currency)
 
         # Get LLM client
         client = self.config.get_llm_client(label="analysis_agent_cost")
@@ -309,7 +309,7 @@ class AnalysisAgent:
                     },
                     {
                         "role": "user",
-                        "content": f"Analyze the cost breakdown for this trip:\n\n{context}"
+                        "content": user_content  # Array of {"type": "text", "text": ...}
                     }
                 ],
                 temperature=0.3,
@@ -353,11 +353,11 @@ class AnalysisAgent:
         """
         print("Optimizing schedule with LLM...")
 
-        # Prepare context for LLM
-        context = self._prepare_schedule_context(activities, preferences, num_days)
+        # Build structured user content for better LLM understanding
+        user_content = self._build_schedule_content(activities, preferences, num_days)
 
         # Get LLM client
-        client = self.config.get_llm_client(label="analysis_agent_schedule")
+        client = self.config.get_llm_client(label="analysis_schedule")
 
         try:
             response = client.chat.completions.create(
@@ -369,7 +369,7 @@ class AnalysisAgent:
                     },
                     {
                         "role": "user",
-                        "content": f"Optimize this activity schedule:\n\n{context}"
+                        "content": user_content  # Array of {"type": "text", "text": ...}
                     }
                 ],
                 temperature=0.3,
@@ -392,21 +392,47 @@ class AnalysisAgent:
             print(f"LLM schedule optimization failed: {str(e)}")
             return self._fallback_schedule_optimization(activities, preferences, num_days)
 
-    def _prepare_feasibility_context(self, itinerary: Dict, constraints: Dict) -> str:
-        """Prepare context for feasibility analysis"""
-        sections = []
+    def _build_feasibility_content(
+        self,
+        itinerary: Dict,
+        constraints: Dict
+    ) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for feasibility analysis.
 
-        sections.append("## ITINERARY")
-        sections.append(json.dumps(self._strip_base64_from_data(itinerary), indent=2, default=str))
+        Returns an array of content parts for better LLM understanding:
+        - Separates itinerary from constraints
+        - Uses JSON for structured data
+        """
+        content_parts = []
 
-        sections.append("\n## CONSTRAINTS")
-        sections.append(f"Budget: {constraints.get('budget', 'Not specified')}")
-        sections.append(f"Preferences: {constraints.get('preferences', [])}")
-        sections.append(f"Hard Constraints: {constraints.get('hard_constraints', [])}")
+        # Part 1: Itinerary as JSON
+        sanitized_itinerary = self._strip_base64_from_data(itinerary)
+        content_parts.append({
+            "type": "text",
+            "text": f"## Itinerary\n\n```json\n{json.dumps(sanitized_itinerary, indent=2, default=str)}\n```"
+        })
 
-        return "\n".join(sections)
+        # Part 2: Constraints as JSON
+        constraint_data = {
+            "budget": constraints.get("budget", "Not specified"),
+            "preferences": constraints.get("preferences", []),
+            "hard_constraints": constraints.get("hard_constraints", [])
+        }
+        content_parts.append({
+            "type": "text",
+            "text": f"## Constraints\n\n```json\n{json.dumps(constraint_data, indent=2)}\n```"
+        })
 
-    def _prepare_cost_context(
+        # Part 3: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nAnalyze the feasibility of this travel itinerary against the constraints."
+        })
+
+        return content_parts
+
+    def _build_cost_content(
         self,
         flights: Dict,
         hotels: Dict,
@@ -414,45 +440,96 @@ class AnalysisAgent:
         budget: float,
         num_days: int,
         currency: str
-    ) -> str:
-        """Prepare context for cost analysis"""
-        sections = []
+    ) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for cost analysis.
 
-        sections.append("## TRIP INFO")
-        sections.append(f"Budget: {budget} {currency}")
-        sections.append(f"Duration: {num_days} days ({num_days - 1} nights)")
+        Returns an array of content parts for better LLM understanding:
+        - Separates trip info, flights, hotels, and activities
+        - Uses JSON for structured data
+        """
+        content_parts = []
 
-        sections.append("\n## FLIGHT DATA")
-        sections.append(json.dumps(self._strip_base64_from_data(flights), indent=2, default=str))
+        # Part 1: Trip info as JSON
+        trip_info = {
+            "budget": budget,
+            "currency": currency,
+            "num_days": num_days,
+            "num_nights": num_days - 1
+        }
+        content_parts.append({
+            "type": "text",
+            "text": f"## Trip Info\n\n```json\n{json.dumps(trip_info, indent=2)}\n```"
+        })
 
-        sections.append("\n## HOTEL DATA")
-        sections.append(json.dumps(self._strip_base64_from_data(hotels), indent=2, default=str))
+        # Part 2: Flight data as JSON
+        sanitized_flights = self._strip_base64_from_data(flights)
+        content_parts.append({
+            "type": "text",
+            "text": f"## Flight Data\n\n```json\n{json.dumps(sanitized_flights, indent=2, default=str)}\n```"
+        })
 
-        sections.append("\n## ACTIVITIES")
-        sections.append(json.dumps(self._strip_base64_from_data(activities), indent=2, default=str))
+        # Part 3: Hotel data as JSON
+        sanitized_hotels = self._strip_base64_from_data(hotels)
+        content_parts.append({
+            "type": "text",
+            "text": f"## Hotel Data\n\n```json\n{json.dumps(sanitized_hotels, indent=2, default=str)}\n```"
+        })
 
-        return "\n".join(sections)
+        # Part 4: Activities as JSON
+        sanitized_activities = self._strip_base64_from_data(activities)
+        content_parts.append({
+            "type": "text",
+            "text": f"## Activities\n\n```json\n{json.dumps(sanitized_activities, indent=2, default=str)}\n```"
+        })
 
-    def _prepare_schedule_context(
+        # Part 5: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nAnalyze the cost breakdown for this trip and provide budget recommendations."
+        })
+
+        return content_parts
+
+    def _build_schedule_content(
         self,
         activities: List[Dict],
         preferences: List[str],
         num_days: int
-    ) -> str:
-        """Prepare context for schedule optimization"""
-        sections = []
+    ) -> List[Dict[str, Any]]:
+        """
+        Build structured content array for schedule optimization.
 
-        sections.append("## TRIP DURATION")
-        sections.append(f"Number of days: {num_days}")
+        Returns an array of content parts for better LLM understanding:
+        - Separates trip duration, preferences, and activities
+        - Uses JSON for structured data
+        """
+        content_parts = []
 
-        sections.append("\n## USER PREFERENCES")
-        for pref in preferences:
-            sections.append(f"- {pref}")
+        # Part 1: Trip duration and preferences as JSON
+        schedule_params = {
+            "num_days": num_days,
+            "preferences": preferences
+        }
+        content_parts.append({
+            "type": "text",
+            "text": f"## Schedule Parameters\n\n```json\n{json.dumps(schedule_params, indent=2)}\n```"
+        })
 
-        sections.append("\n## ACTIVITIES TO SCHEDULE")
-        sections.append(json.dumps(self._strip_base64_from_data(activities), indent=2, default=str))
+        # Part 2: Activities as JSON
+        sanitized_activities = self._strip_base64_from_data(activities)
+        content_parts.append({
+            "type": "text",
+            "text": f"## Activities to Schedule\n\n```json\n{json.dumps(sanitized_activities, indent=2, default=str)}\n```"
+        })
 
-        return "\n".join(sections)
+        # Part 3: Task instruction
+        content_parts.append({
+            "type": "text",
+            "text": "## Task\n\nOptimize this activity schedule for maximum efficiency and enjoyment."
+        })
+
+        return content_parts
 
     def _parse_llm_response(self, content: str) -> Dict[str, Any]:
         """Parse LLM JSON response"""
