@@ -31,10 +31,11 @@ Then IMMEDIATELY call the first tool (research_destination).
 
 - After research_destination completes, group independent tools together:
 
-  **Primary research (can run in PARALLEL):**
+  **Primary research (MUST call ALL FOUR in PARALLEL):**
   - research_flights
   - research_accommodations
   - research_activities
+  - research_restaurants ← **REQUIRED** for meal planning with real restaurant names, dishes, prices
 
   **Analysis & enrichment (can run in PARALLEL, after primary research):**
   - analyze_weather
@@ -69,7 +70,8 @@ Once all hard constraints PASS:
 
 1. Call `generate_itinerary` to create the detailed day-by-day itinerary.
 2. Call `generate_summary` to create a concise executive summary.
-3. **ALWAYS call `format_presentation` LAST** to produce a professional markdown document.
+3. Call `fetch_images` to fetch specific images for activities and attractions in the itinerary.
+4. **ALWAYS call `format_presentation` LAST** to produce a professional markdown document with images.
 
 Never skip these tool calls.
 

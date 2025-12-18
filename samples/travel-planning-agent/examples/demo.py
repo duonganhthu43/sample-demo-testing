@@ -147,11 +147,11 @@ def main():
     print("  4. LLM analyzes feasibility and optimizes the plan")
     print("  5. LLM generates comprehensive itinerary")
     print()
-    print("Available Tools (13):")
-    print("  Research: destination, flights, accommodations, activities")
+    print("Available Tools (15):")
+    print("  Research: destination, flights, accommodations, activities, restaurants")
     print("  Analysis: feasibility, cost breakdown, schedule optimization")
     print("  Specialized: budget, weather, safety, local transport")
-    print("  Output: generate itinerary, generate summary")
+    print("  Output: generate itinerary, generate summary, fetch images")
     print()
 
     try:

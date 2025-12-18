@@ -64,16 +64,53 @@ Create a well-structured markdown document with:
    - Link hotel names if URLs are available: [Hotel Name](url)
    - Add a brief note explaining why the recommended hotel was chosen
 
-5. **Day-by-Day Itinerary**
+5. **Day-by-Day Itinerary** (DETAILED FORMAT)
    - Each day as a subsection with day number and theme
-   - Daily cost estimate
-   - **IMPORTANT: For each activity that has image data, embed using its placeholder:**
-     ```
-     ![Activity Name](IMAGE_PLACEHOLDER:activity_name)
-     ```
-   - Table format: Time | Activity | Location | Cost
-   - Link activities if source URLs available
-   - Add tips/notes for each day
+   - Daily cost estimate prominently displayed
+
+   **For EACH activity, use this detailed format (NOT a table):**
+
+   ```markdown
+   #### ⏰ 09:00 - 11:00 | Activity Name
+   📍 **Location:** Location Name | 💰 **Cost:** $25
+
+   ![Activity Name](IMAGE_PLACEHOLDER:activity_key)
+
+   > Description paragraph from the activity data. This should be 2-3 sentences
+   > describing what visitors will experience, historical significance, and practical tips.
+
+   **💡 Tips:** Any helpful notes for this activity
+
+   ---
+   ```
+
+   **IMPORTANT for Day-by-Day:**
+   - Use the `description` field from each schedule item - it contains detailed info
+   - **IMAGES**: If a schedule item has `image_placeholder`, copy it EXACTLY into the markdown:
+     `![Activity Name](IMAGE_PLACEHOLDER:xxx)` where xxx is the key from image_placeholder
+   - For flights: include arrival time, duration, and transportation options in the description
+   - For meals: use 🍳 (breakfast), 🍜 (lunch), 🍽️ (dinner) icons and show:
+     - Restaurant name and location
+     - Recommended dishes
+     - Price per person
+     - Reservation info
+   - Use blockquotes (>) for the description text to make it stand out
+   - Add horizontal rules (---) between activities for visual separation
+   - Link activities if source URLs available: [Activity Name](url)
+
+   **Example meal format:**
+   ```markdown
+   #### 🍜 12:30 - 13:30 | Lunch at Tsukiji Outer Market
+   📍 **Location:** Tsukiji, Tokyo | 💰 **Cost:** ~$25/person
+
+   > Fresh sushi and seafood at Tokyo's famous fish market. Try the signature
+   > omakase sushi at Sushi Dai or grab tamagoyaki from street vendors.
+   > 5-min walk from previous activity. No reservation needed, expect 30-min queue.
+
+   **🍣 Try:** Omakase sushi, Sea urchin (uni), Tamagoyaki
+
+   ---
+   ```
 
 6. **Cost Breakdown Table**
    - Category breakdown: Flights, Accommodation, Activities, Food, Transport
@@ -170,8 +207,15 @@ class PresentationAgent:
         itinerary = itinerary or {}
         context = context or {}
 
-        # Build image registry for post-processing (keeps base64 out of LLM context)
-        image_registry = self._build_image_registry(context)
+        # Use external image registry from ImageAgent if available,
+        # otherwise build from research results (legacy behavior)
+        external_registry = context.get("image_registry", {})
+        if external_registry:
+            image_registry = external_registry
+            print(f"Using {len(image_registry)} images from ImageAgent")
+        else:
+            # Fallback to building registry from research results
+            image_registry = self._build_image_registry(context)
 
         # Build structured content array for better LLM understanding
         user_content = self._build_presentation_content(itinerary, context)
@@ -446,8 +490,52 @@ class PresentationAgent:
                         if name and base64:
                             self._add_image_aliases(registry, name, base64)
 
+        # Add common attraction keyword mappings
+        # This helps match itinerary-style keys (e.g., "sensoji_temple") to activity images
+        self._add_common_attraction_aliases(registry)
+
         print(f"Built image registry with {len(registry)} keys")
         return registry
+
+    def _add_common_attraction_aliases(self, registry: Dict[str, str]) -> None:
+        """
+        Add common attraction name variations as aliases.
+        Maps various spellings/names to existing images.
+        """
+        # Find images that might be generic "attractions" or "things to do" images
+        # and map common attraction names to them
+        generic_activity_keys = []
+        for key in registry:
+            if any(term in key for term in ['attractions', 'things_to_do', 'places_to_visit', 'bucket_list']):
+                generic_activity_keys.append(key)
+
+        # Common Tokyo attraction name variations
+        attraction_aliases = {
+            # Temple/Shrine variations
+            'sensoji': ['sensoji_temple', 'senso_ji', 'asakusa_temple', 'senso_ji_temple'],
+            'meiji': ['meiji_shrine', 'meiji_jingu', 'meiji_temple'],
+            'tokyo_tower': ['tokyo_tower', 'tokyotower'],
+            'skytree': ['tokyo_skytree', 'skytree', 'sky_tree'],
+            'imperial_palace': ['imperial_palace', 'tokyo_imperial_palace', 'palace'],
+            'shibuya': ['shibuya_crossing', 'shibuya', 'shibuya_scramble'],
+            'shinjuku': ['shinjuku', 'shinjuku_gyoen', 'omoide_yokocho'],
+            'ueno': ['ueno_park', 'ueno', 'ueno_zoo'],
+            'tsukiji': ['tsukiji', 'tsukiji_market', 'tsukiji_outer_market'],
+            'akihabara': ['akihabara', 'akihabara_district', 'electric_town'],
+            'harajuku': ['harajuku', 'takeshita_street', 'takeshita'],
+            'ginza': ['ginza', 'ginza_district'],
+            'roppongi': ['roppongi', 'roppongi_hills'],
+            'odaiba': ['odaiba', 'teamlab', 'teamlab_borderless'],
+            'asakusa': ['asakusa', 'asakusa_district', 'nakamise'],
+        }
+
+        # If we have a generic activity image, add aliases for common attractions
+        if generic_activity_keys:
+            fallback_image = registry[generic_activity_keys[0]]
+            for primary, aliases in attraction_aliases.items():
+                for alias in aliases:
+                    if alias not in registry:
+                        registry[alias] = fallback_image
 
     def _add_image_aliases(
         self,
@@ -604,18 +692,24 @@ class PresentationAgent:
         Recursively strip base64 image data from dicts/lists.
         Replaces image_base64 with has_image: true and adds image_placeholder
         to tell the LLM exactly what placeholder key to use.
+
+        Also converts image_suggestion (from itinerary schedule items) to
+        image_placeholder format for consistent handling by the LLM.
         """
         if isinstance(data, dict):
             result = {}
             has_base64 = False
             name_value = None
+            image_suggestion_value = None
 
-            # First pass: check for image_base64 and name
+            # First pass: check for image_base64, name, and image_suggestion
             for key, value in data.items():
                 if key == "image_base64" and value:
                     has_base64 = True
                 elif key == "name":
                     name_value = value
+                elif key == "image_suggestion" and value:
+                    image_suggestion_value = value
 
             # Second pass: build result
             for key, value in data.items():
@@ -628,6 +722,13 @@ class PresentationAgent:
                             placeholder_key = self._normalize_placeholder_key(name_value)
                             result["image_placeholder"] = f"IMAGE_PLACEHOLDER:{placeholder_key}"
                     continue  # Skip the actual base64 data
+                elif key == "image_suggestion":
+                    # Convert image_suggestion to image_placeholder format
+                    # This allows schedule items to have consistent image handling
+                    if image_suggestion_value:
+                        placeholder_key = self._normalize_placeholder_key(image_suggestion_value)
+                        result["image_placeholder"] = f"IMAGE_PLACEHOLDER:{placeholder_key}"
+                    continue  # Replace image_suggestion with image_placeholder
                 else:
                     result[key] = self._strip_base64_from_data(value)
             return result
@@ -669,7 +770,20 @@ class PresentationAgent:
                 matched_count += 1
                 return registry[normalized]
 
-            # Strategy 3: Partial match (key contains registry key or vice versa)
+            # Strategy 3: Stripped match (remove all underscores/hyphens for comparison)
+            # e.g., "sensojitemple" should match "sensoji_temple"
+            stripped_key = normalized.replace('_', '').replace('-', '')
+            for reg_key, base64_data in registry.items():
+                stripped_reg = reg_key.replace('_', '').replace('-', '')
+                if stripped_key == stripped_reg:
+                    matched_count += 1
+                    return base64_data
+                # Also check if one contains the other (for cases like "visitsensojitemple" vs "sensoji_temple")
+                if stripped_key in stripped_reg or stripped_reg in stripped_key:
+                    matched_count += 1
+                    return base64_data
+
+            # Strategy 4: Partial match (key contains registry key or vice versa)
             for reg_key, base64_data in registry.items():
                 if key in reg_key or reg_key in key:
                     matched_count += 1

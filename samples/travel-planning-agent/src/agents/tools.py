@@ -125,6 +125,37 @@ TOOL_DEFINITIONS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "research_restaurants",
+            "description": "Search for restaurants and dining options at a destination, including local cuisine, price ranges, and recommended dishes",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "destination": {
+                        "type": "string",
+                        "description": "City or area to search for restaurants"
+                    },
+                    "areas": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Specific areas/neighborhoods to search (e.g., ['Shibuya', 'Shinjuku'])"
+                    },
+                    "cuisine_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Types of cuisine to search for (e.g., ['Japanese', 'Italian'])"
+                    },
+                    "max_budget_per_person": {
+                        "type": "number",
+                        "description": "Maximum budget per person per meal in USD"
+                    }
+                },
+                "required": ["destination"]
+            }
+        }
+    },
 
     # Analysis Tools
     {
@@ -335,8 +366,25 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_images",
+            "description": "Fetch specific images for the itinerary based on activities and attractions. Call this AFTER generate_itinerary and BEFORE format_presentation to get relevant images.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_images": {
+                        "type": "integer",
+                        "description": "Maximum number of images to fetch (default: 15)"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "format_presentation",
-            "description": "Format the itinerary into a professional markdown document with tables, checklists, and links. Call this as the FINAL step after generate_itinerary.",
+            "description": "Format the itinerary into a professional markdown document with tables, checklists, and links. Call this as the FINAL step after generate_itinerary and fetch_images.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -369,6 +417,7 @@ class ToolExecutor:
         self._safety_agent = None
         self._transport_agent = None
         self._itinerary_agent = None
+        self._image_agent = None
         self._presentation_agent = None
 
         # Context accumulation
@@ -380,7 +429,8 @@ class ToolExecutor:
             "research": [],
             "analysis": [],
             "specialized": [],
-            "itinerary": None
+            "itinerary": None,
+            "image_registry": {}  # Fetched images from ImageAgent
         }
 
     # Lazy agent initialization
@@ -425,6 +475,12 @@ class ToolExecutor:
             from .itinerary_agent import ItineraryAgent
             self._itinerary_agent = ItineraryAgent(self.config)
         return self._itinerary_agent
+
+    def _get_image_agent(self):
+        if self._image_agent is None:
+            from .image_agent import ImageAgent
+            self._image_agent = ImageAgent(self.config)
+        return self._image_agent
 
     def _get_presentation_agent(self):
         if self._presentation_agent is None:
@@ -472,6 +528,12 @@ class ToolExecutor:
                 self.context["research"].append({"type": "activities", **result.to_dict()})
                 return {"success": True, "result": result.to_dict()}
 
+            elif tool_name == "research_restaurants":
+                agent = self._get_research_agent()
+                result = agent.research_restaurants(**arguments)
+                self.context["research"].append({"type": "restaurants", **result})
+                return {"success": True, "result": result}
+
             # Analysis Tools
             elif tool_name == "analyze_itinerary_feasibility":
                 agent = self._get_analysis_agent()
@@ -515,10 +577,21 @@ class ToolExecutor:
                 preferences = arguments.get("preferences", self.context.get("constraints", {}).get("preferences", []))
                 num_days = arguments.get("num_days", self.context.get("num_days", 5))
 
+                # Build research context for better schedule optimization
+                research_context = {
+                    "destination": self.context.get("destination"),
+                    "start_date": self.context.get("start_date"),
+                    "end_date": self.context.get("end_date"),
+                    "flights": self._get_flights_from_context(),
+                    "hotels": self._get_hotels_from_context(),
+                    "restaurants": self.context.get("restaurants", {})
+                }
+
                 result = agent.analyze_schedule_optimization(
                     activities=activities,
                     preferences=preferences,
-                    num_days=num_days
+                    num_days=num_days,
+                    research_context=research_context
                 )
                 self.context["analysis"].append({"type": "schedule", **result.to_dict()})
                 return {"success": True, "result": result.to_dict()}
@@ -578,6 +651,27 @@ class ToolExecutor:
                 result = agent.generate_summary(itinerary, self.context)
                 return {"success": True, "result": result.to_dict()}
 
+            elif tool_name == "fetch_images":
+                # Fetch specific images based on itinerary content
+                agent = self._get_image_agent()
+                itinerary = self.context.get("itinerary") or {}
+                max_images = arguments.get("max_images", 15)
+                result = agent.fetch_images_for_itinerary(
+                    itinerary=itinerary,
+                    context=self.context,
+                    max_images=max_images
+                )
+                # Store image registry in context for PresentationAgent
+                self.context["image_registry"] = result.images
+                return {
+                    "success": True,
+                    "result": {
+                        "total_fetched": result.total_fetched,
+                        "total_requested": result.total_requested,
+                        "failed_keys": result.failed_keys
+                    }
+                }
+
             elif tool_name == "format_presentation":
                 # Ensure critical analyses have run at least once
                 self._ensure_required_analyses()
@@ -609,10 +703,21 @@ class ToolExecutor:
             preferences = self.context.get("constraints", {}).get("preferences", [])
             num_days = self.context.get("num_days", 5)
 
+            # Build research context for better schedule optimization
+            research_context = {
+                "destination": self.context.get("destination"),
+                "start_date": self.context.get("start_date"),
+                "end_date": self.context.get("end_date"),
+                "flights": self._get_flights_from_context(),
+                "hotels": self._get_hotels_from_context(),
+                "restaurants": self.context.get("restaurants", {})
+            }
+
             result = agent.analyze_schedule_optimization(
                 activities=activities,
                 preferences=preferences,
-                num_days=num_days
+                num_days=num_days,
+                research_context=research_context
             )
             self.context["analysis"].append({"type": "schedule", **result.to_dict()})
 

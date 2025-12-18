@@ -10,7 +10,7 @@ from typing import Dict, List, Any, Optional
 
 from ..utils.config import get_config
 from ..utils.schemas import get_response_format, DESTINATION_EXTRACTION_SCHEMA
-from ..tools import FlightSearchTool, HotelSearchTool, ActivitySearchTool
+from ..tools import FlightSearchTool, HotelSearchTool, ActivitySearchTool, RestaurantSearchTool
 
 
 @dataclass
@@ -115,40 +115,16 @@ class ActivityResearchResult:
         }
 
 
-DESTINATION_EXTRACTION_PROMPT = """You are a travel information extraction expert. Your task is to extract structured travel information from raw search results.
+DESTINATION_EXTRACTION_PROMPT = """You are a travel information extraction expert. Extract structured travel information from the provided search results.
 
-## Input
-You will receive a JSON object with:
-- "destination": The travel destination name
-- "search_results": Array of search result text content
+## Guidelines
+1. Extract information found in the search results
+2. If information is missing, provide reasonable defaults based on the destination
+3. Cultural tips should be practical and actionable for tourists
+4. Local cuisine should list specific dish names, not general descriptions
+5. Safety rating: choose from "Very Safe", "Safe", "Moderate", or "Exercise Caution"
 
-Extract the following information:
-
-## Output Format
-Return a valid JSON object with this structure:
-```json
-{
-    "overview": "2-3 sentence overview of the destination",
-    "visa_requirements": "Visa requirements for tourists (be specific about duration, requirements)",
-    "best_time_to_visit": "Best months/seasons to visit with reasoning",
-    "language": "Official language(s) and English proficiency level",
-    "currency": "Local currency name and code (e.g., 'Japanese Yen (JPY)')",
-    "time_zone": "Timezone abbreviation and UTC offset (e.g., 'JST (UTC+9)')",
-    "cultural_tips": ["Tip 1", "Tip 2", "Tip 3", "Tip 4"],
-    "safety_rating": "Very Safe / Safe / Moderate / Exercise Caution",
-    "local_cuisine": ["Dish 1", "Dish 2", "Dish 3"]
-}
-```
-
-## Guidelines:
-1. Extract ONLY information found in the search results
-2. If information is not found, provide a reasonable general answer based on the destination
-3. Be specific and actionable in your tips
-4. Cultural tips should be practical for tourists
-5. Local cuisine should list specific dishes, not general descriptions
-6. Safety rating should be based on search results or general knowledge
-
-IMPORTANT: Return ONLY the JSON object, no markdown formatting or explanation."""
+The response schema has detailed descriptions for each field - follow those exactly."""
 
 
 class ResearchAgent:
@@ -162,6 +138,7 @@ class ResearchAgent:
         self.flight_tool = FlightSearchTool()
         self.hotel_tool = HotelSearchTool()
         self.activity_tool = ActivitySearchTool()
+        self.restaurant_tool = RestaurantSearchTool()
 
         if self.config.search.tavily_api_key:
             print("ResearchAgent initialized with Tavily API")
@@ -376,7 +353,7 @@ class ResearchAgent:
         """Generate fallback destination info using LLM only"""
         try:
             # Try to use LLM with general knowledge
-            llm_client = self.config.get_llm_client(label="research_agent_fallback")
+            llm_client = self.config.get_llm_client(label="research_fallback")
 
             response = llm_client.chat.completions.create(
                 model=self.config.llm.model,
@@ -548,3 +525,33 @@ class ResearchAgent:
             free_activities=result.get("free_activities", []),
             total_options=result.get("total_options", 0)
         )
+
+    def research_restaurants(
+        self,
+        destination: str,
+        areas: Optional[List[str]] = None,
+        cuisine_types: Optional[List[str]] = None,
+        max_budget_per_person: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Research restaurants and dining options
+
+        Args:
+            destination: City/location
+            areas: Specific areas/neighborhoods to search
+            cuisine_types: Types of cuisine to search for
+            max_budget_per_person: Maximum budget per person
+
+        Returns:
+            Dictionary with restaurant options grouped by area and meal type
+        """
+        print(f"Researching restaurants in {destination}")
+
+        result = self.restaurant_tool.search_restaurants(
+            destination=destination,
+            areas=areas,
+            cuisine_types=cuisine_types,
+            max_budget=max_budget_per_person
+        )
+
+        return result

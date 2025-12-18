@@ -59,77 +59,31 @@ class SummaryResult:
         }
 
 
-ITINERARY_SYSTEM_PROMPT = """You are a travel itinerary planning expert. Your task is to create a detailed day-by-day itinerary based on the provided research data.
+ITINERARY_SYSTEM_PROMPT = """You are a travel itinerary planning expert. Create a detailed day-by-day itinerary based on the provided research data.
 
-## Your Output
-Return a valid JSON object with this exact structure:
-```json
-{
-    "days": [
-        {
-            "day": 1,
-            "date": "Day 1",
-            "theme": "Arrival & First Impressions",
-            "schedule": [
-                {
-                    "time": "09:00 - 11:00",
-                    "activity": "Activity name",
-                    "location": "Location name",
-                    "category": "Category",
-                    "notes": "Helpful tips",
-                    "cost": 25.00,
-                    "source_url": "optional url"
-                }
-            ],
-            "day_cost": 100.00
-        }
-    ],
-    "total_estimated_cost": 1500.00,
-    "summary": "Brief trip summary",
-    "packing_list": ["item1", "item2"],
-    "important_notes": ["note1", "note2"]
-}
-```
+## Key Guidelines
 
-## Guidelines
-1. **Timing**: Create realistic schedules with appropriate time for each activity
-   - Consider travel time between locations
-   - Include meal breaks at appropriate local times
-   - Don't overschedule - allow buffer time
+1. **Use Research Data**: Use ONLY data from the provided research (activities, restaurants, flights, hotels)
 
-2. **Activities**: Use ONLY activities from the provided research data
-   - Include the actual prices from the data
-   - Use source URLs if available
-   - Categorize appropriately
+2. **Realistic Scheduling**:
+   - Allow travel time between locations
+   - Breakfast: 7:00-9:00 AM | Lunch: 12:00-1:30 PM | Dinner: 6:30-8:00 PM (adjust for local culture)
+   - Don't overschedule - include buffer time
 
-3. **Meals**: Include breakfast, lunch, and dinner
-   - Use food activities from research if available
-   - Estimate meal costs based on the destination's cost level
-   - Suggest local cuisine mentioned in destination info
+3. **Detailed Descriptions** (see schema descriptions for format):
+   - FLIGHTS: Airport arrival time, passport reminder, duration, transport from airport with costs
+   - ATTRACTIONS: What to experience, opening hours, transport with costs
+   - MEALS: Use restaurant data - name, dishes, price per person, reservation/wait info
 
-4. **Cost Calculation**: Be accurate
-   - Sum actual flight costs from flight data
-   - Calculate hotel costs (price_per_night × nights)
-   - Sum activity costs
-   - Estimate daily food and transport based on destination
+4. **Restaurants**: If restaurant research data is provided, use actual restaurants near each day's area
 
-5. **Constraints**: Respect user constraints
-   - Stay within budget
-   - Honor max activities per day preference
-   - Meet hard constraints (arrival times, direct flights, etc.)
+5. **Cost Accuracy**:
+   - Use actual prices from research data
+   - Sum: flights + (hotel × nights) + activities + meals + transport
 
-6. **Packing List**: Based on weather and destination
-   - Include weather-appropriate clothing
-   - Add destination-specific items (temple visits = modest clothing)
-   - Include practical essentials
+6. **Respect Constraints**: Stay within budget, honor hard constraints
 
-7. **Important Notes**: Include actionable information
-   - Visa requirements
-   - Weather warnings
-   - Cultural tips
-   - Hard constraints reminders
-
-IMPORTANT: Return ONLY the JSON object, no markdown formatting or explanation.
+The response schema has detailed descriptions for each field - follow those exactly.
 """
 
 
@@ -266,6 +220,15 @@ class ItineraryAgent:
                     "must_do": item.get("must_do", []),
                     "free_activities": item.get("free_activities", [])
                 })
+
+            elif item_type == "restaurants":
+                research_data["restaurants"] = {
+                    "breakfast_options": item.get("breakfast_options", [])[:5],
+                    "lunch_options": item.get("lunch_options", [])[:8],
+                    "dinner_options": item.get("dinner_options", [])[:8],
+                    "budget_friendly": item.get("budget_friendly", [])[:5],
+                    "by_area": item.get("by_area", {})
+                }
 
         if research_data:
             content_parts.append({

@@ -8,6 +8,12 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
 
 from ..utils.config import get_config
+from ..utils.schemas import (
+    get_response_format,
+    FEASIBILITY_ANALYSIS_SCHEMA,
+    COST_BREAKDOWN_SCHEMA,
+    SCHEDULE_OPTIMIZATION_SCHEMA
+)
 
 
 @dataclass
@@ -234,21 +240,36 @@ class AnalysisAgent:
         client = self.config.get_llm_client(label="analyze_itinerary")
 
         try:
-            response = client.chat.completions.create(
-                model=self.config.llm.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": FEASIBILITY_SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content  # Array of {"type": "text", "text": ...}
-                    }
-                ],
-                temperature=0.3,
-                max_tokens=2000
-            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": FEASIBILITY_SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": user_content  # Array of {"type": "text", "text": ...}
+                }
+            ]
+
+            try:
+                response = client.chat.completions.create(
+                    model=self.config.llm.model,
+                    messages=messages,
+                    response_format=get_response_format("feasibility_analysis", FEASIBILITY_ANALYSIS_SCHEMA),
+                    temperature=0.3,
+                    max_tokens=2000
+                )
+            except Exception as e:
+                if "response_format" in str(e).lower():
+                    # Fallback for models that don't support response_format
+                    response = client.chat.completions.create(
+                        model=self.config.llm.model,
+                        messages=messages,
+                        temperature=0.3,
+                        max_tokens=2000
+                    )
+                else:
+                    raise
 
             content = response.choices[0].message.content
             data = self._parse_llm_response(content)
@@ -300,21 +321,36 @@ class AnalysisAgent:
         client = self.config.get_llm_client(label="analyze_cost")
 
         try:
-            response = client.chat.completions.create(
-                model=self.config.llm.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": COST_ANALYSIS_SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content  # Array of {"type": "text", "text": ...}
-                    }
-                ],
-                temperature=0.3,
-                max_tokens=2000
-            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": COST_ANALYSIS_SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": user_content  # Array of {"type": "text", "text": ...}
+                }
+            ]
+
+            try:
+                response = client.chat.completions.create(
+                    model=self.config.llm.model,
+                    messages=messages,
+                    response_format=get_response_format("cost_breakdown", COST_BREAKDOWN_SCHEMA),
+                    temperature=0.3,
+                    max_tokens=2000
+                )
+            except Exception as e:
+                if "response_format" in str(e).lower():
+                    # Fallback for models that don't support response_format
+                    response = client.chat.completions.create(
+                        model=self.config.llm.model,
+                        messages=messages,
+                        temperature=0.3,
+                        max_tokens=2000
+                    )
+                else:
+                    raise
 
             content = response.choices[0].message.content
             data = self._parse_llm_response(content)
@@ -338,7 +374,8 @@ class AnalysisAgent:
         self,
         activities: List[Dict[str, Any]],
         preferences: List[str],
-        num_days: int = 5
+        num_days: int = 5,
+        research_context: Optional[Dict[str, Any]] = None
     ) -> ScheduleOptimizationResult:
         """
         Optimize the activity schedule using LLM
@@ -347,6 +384,7 @@ class AnalysisAgent:
             activities: List of planned activities
             preferences: User preferences
             num_days: Number of days
+            research_context: Optional context with destination, hotels, flights, restaurants
 
         Returns:
             ScheduleOptimizationResult with optimized schedule
@@ -354,27 +392,42 @@ class AnalysisAgent:
         print("Optimizing schedule with LLM...")
 
         # Build structured user content for better LLM understanding
-        user_content = self._build_schedule_content(activities, preferences, num_days)
+        user_content = self._build_schedule_content(activities, preferences, num_days, research_context)
 
         # Get LLM client
         client = self.config.get_llm_client(label="analysis_schedule")
 
         try:
-            response = client.chat.completions.create(
-                model=self.config.llm.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": SCHEDULE_OPTIMIZATION_SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content  # Array of {"type": "text", "text": ...}
-                    }
-                ],
-                temperature=0.3,
-                max_tokens=2000
-            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": SCHEDULE_OPTIMIZATION_SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": user_content  # Array of {"type": "text", "text": ...}
+                }
+            ]
+
+            try:
+                response = client.chat.completions.create(
+                    model=self.config.llm.model,
+                    messages=messages,
+                    response_format=get_response_format("schedule_optimization", SCHEDULE_OPTIMIZATION_SCHEMA),
+                    temperature=0.3,
+                    max_tokens=2000
+                )
+            except Exception as e:
+                if "response_format" in str(e).lower():
+                    # Fallback for models that don't support response_format
+                    response = client.chat.completions.create(
+                        model=self.config.llm.model,
+                        messages=messages,
+                        temperature=0.3,
+                        max_tokens=2000
+                    )
+                else:
+                    raise
 
             content = response.choices[0].message.content
             data = self._parse_llm_response(content)
@@ -495,18 +548,63 @@ class AnalysisAgent:
         self,
         activities: List[Dict],
         preferences: List[str],
-        num_days: int
+        num_days: int,
+        research_context: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
         Build structured content array for schedule optimization.
 
         Returns an array of content parts for better LLM understanding:
+        - Includes destination info, hotels, flights from research context
         - Separates trip duration, preferences, and activities
         - Uses JSON for structured data
         """
         content_parts = []
 
-        # Part 1: Trip duration and preferences as JSON
+        # Part 1: Trip context from research (destination, dates, flights, hotels)
+        if research_context:
+            trip_context = {
+                "destination": research_context.get("destination", "Unknown"),
+                "dates": {
+                    "start": research_context.get("start_date"),
+                    "end": research_context.get("end_date")
+                }
+            }
+
+            # Add flight info if available
+            if research_context.get("flights"):
+                flights = research_context["flights"]
+                trip_context["flights"] = {
+                    "outbound": self._extract_flight_summary(flights.get("best_outbound")),
+                    "return": self._extract_flight_summary(flights.get("best_return"))
+                }
+
+            # Add hotel info if available
+            if research_context.get("hotels"):
+                hotels = research_context["hotels"]
+                best_hotel = hotels.get("best_value") or (hotels.get("hotels", [{}])[0] if hotels.get("hotels") else {})
+                trip_context["accommodation"] = {
+                    "name": best_hotel.get("name"),
+                    "location": best_hotel.get("location"),
+                    "check_in_time": "15:00",  # Standard check-in
+                    "check_out_time": "11:00"  # Standard check-out
+                }
+
+            # Add restaurant info if available
+            if research_context.get("restaurants"):
+                restaurants = research_context["restaurants"]
+                restaurant_list = restaurants.get("restaurants", [])[:5]
+                trip_context["dining_options"] = [
+                    {"name": r.get("name"), "cuisine": r.get("cuisine"), "location": r.get("location")}
+                    for r in restaurant_list
+                ]
+
+            content_parts.append({
+                "type": "text",
+                "text": f"## Trip Context\n\n```json\n{json.dumps(trip_context, indent=2, default=str)}\n```"
+            })
+
+        # Part 2: Trip duration and preferences as JSON
         schedule_params = {
             "num_days": num_days,
             "preferences": preferences
@@ -516,7 +614,7 @@ class AnalysisAgent:
             "text": f"## Schedule Parameters\n\n```json\n{json.dumps(schedule_params, indent=2)}\n```"
         })
 
-        # Part 2: Activities as JSON
+        # Part 3: Activities as JSON
         sanitized_activities = self._strip_base64_from_data(activities)
         content_parts.append({
             "type": "text",
@@ -530,6 +628,17 @@ class AnalysisAgent:
         })
 
         return content_parts
+
+    def _extract_flight_summary(self, flight: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Extract a summary of flight info for context."""
+        if not flight:
+            return None
+        return {
+            "airline": flight.get("airline"),
+            "departure_time": flight.get("departure_time"),
+            "arrival_time": flight.get("arrival_time"),
+            "duration": flight.get("duration")
+        }
 
     def _parse_llm_response(self, content: str) -> Dict[str, Any]:
         """Parse LLM JSON response"""
