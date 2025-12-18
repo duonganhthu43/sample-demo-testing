@@ -117,20 +117,45 @@ Create a well-structured markdown document with:
    - Total at bottom in bold
    - Add money-saving tips as bullet points
 
-7. **Packing Checklist**
+7. **Budget Optimization Section** (if budget data provided)
+   - Show original vs optimized total with 💰 savings
+   - List top 3-5 recommendations for saving money
+   - Show budget-friendly alternatives if available
+   - Use a clear format like:
+     ```
+     ## 💰 Budget Optimization
+
+     | | Amount |
+     |---|---|
+     | Original Estimate | $X,XXX |
+     | Optimized | $X,XXX |
+     | **Potential Savings** | **$XXX** |
+
+     ### Recommendations
+     - ✅ Recommendation 1
+     - ✅ Recommendation 2
+     ```
+
+8. **Packing Checklist**
    - Weather summary at top
    - Grouped checklist with categories (Essentials, Clothing, Electronics, Other)
    - Use markdown checkboxes: - [ ] Item
 
-8. **Important Notes**
-   - Use appropriate emojis for different note types
-   - Visa info, weather warnings, constraints, travel tips
+9. **Local Transport Section** (if transport data provided)
+   - 🚇 Recommended transport passes (e.g., JR Pass, Metro cards)
+   - ✈️ Airport transfer options with prices
+   - 🚌 Main transport options with approximate costs
+   - 💡 Transport tips and recommendations
 
-9. **Pre-Trip Checklist**
-   - Markdown checkboxes for preparation tasks
-   - Include visa, booking, insurance, bank notification, etc.
+10. **Important Notes**
+    - Use appropriate emojis for different note types
+    - Visa info, weather warnings, constraints, travel tips
 
-10. **Footer**
+11. **Pre-Trip Checklist**
+    - Markdown checkboxes for preparation tasks
+    - Include visa, booking, insurance, bank notification, etc.
+
+12. **Footer**
     - Disclaimer about prices/availability
     - Friendly sign-off
 
@@ -207,15 +232,15 @@ class PresentationAgent:
         itinerary = itinerary or {}
         context = context or {}
 
-        # Use external image registry from ImageAgent if available,
-        # otherwise build from research results (legacy behavior)
+        # Build image registry from research results (activities, hotels, restaurants)
+        # then merge with ImageAgent's external registry if available
+        image_registry = self._build_image_registry(context)
+
+        # Merge external registry from ImageAgent (takes precedence for duplicate keys)
         external_registry = context.get("image_registry", {})
         if external_registry:
-            image_registry = external_registry
-            print(f"Using {len(image_registry)} images from ImageAgent")
-        else:
-            # Fallback to building registry from research results
-            image_registry = self._build_image_registry(context)
+            image_registry.update(external_registry)
+            print(f"Using {len(external_registry)} images from ImageAgent, {len(image_registry)} total")
 
         # Build structured content array for better LLM understanding
         user_content = self._build_presentation_content(itinerary, context)
@@ -386,7 +411,36 @@ class PresentationAgent:
                 "text": f"## Safety Info\n\n```json\n{json.dumps(safety_data, indent=2)}\n```"
             })
 
-        # Part 10: Constraints
+        # Part 10: Budget optimization
+        budget = self._get_from_specialized(context, "budget")
+        if budget:
+            budget_data = {
+                "original_total": budget.get("original_total", 0),
+                "optimized_total": budget.get("optimized_total", 0),
+                "savings": budget.get("savings", 0),
+                "recommendations": budget.get("recommendations", [])[:5],
+                "budget_friendly_alternatives": budget.get("budget_friendly_alternatives", [])[:3]
+            }
+            content_parts.append({
+                "type": "text",
+                "text": f"## Budget Optimization\n\n```json\n{json.dumps(budget_data, indent=2)}\n```"
+            })
+
+        # Part 11: Transport info
+        transport = self._get_from_specialized(context, "transport")
+        if transport:
+            transport_data = {
+                "transport_options": transport.get("transport_options", [])[:4],
+                "recommended_passes": transport.get("recommended_passes", [])[:3],
+                "airport_transfer": transport.get("airport_transfer", {}),
+                "tips": transport.get("tips", [])[:4]
+            }
+            content_parts.append({
+                "type": "text",
+                "text": f"## Local Transport\n\n```json\n{json.dumps(transport_data, indent=2)}\n```"
+            })
+
+        # Part 12: Constraints
         constraints = context.get("constraints", {})
         if constraints:
             constraint_data = {
@@ -399,7 +453,7 @@ class PresentationAgent:
                 "text": f"## User Constraints\n\n```json\n{json.dumps(constraint_data, indent=2)}\n```"
             })
 
-        # Part 11: Task instruction
+        # Part 13: Task instruction
         content_parts.append({
             "type": "text",
             "text": "## Task\n\nFormat the travel itinerary data above into a professional markdown document."
@@ -489,6 +543,27 @@ class PresentationAgent:
                         base64 = hotel.get("image_base64")
                         if name and base64:
                             self._add_image_aliases(registry, name, base64)
+
+        # Add restaurant images with multiple aliases
+        for item in context.get("research") or []:
+            if isinstance(item, dict) and item.get("type") == "restaurants":
+                # Process all restaurant lists
+                all_restaurants = []
+                all_restaurants.extend(item.get("restaurants", []))
+                all_restaurants.extend(item.get("dinner_options", []))
+                all_restaurants.extend(item.get("lunch_options", []))
+                all_restaurants.extend(item.get("breakfast_options", []))
+
+                for restaurant in all_restaurants:
+                    if isinstance(restaurant, dict):
+                        name = restaurant.get("name", "")
+                        base64 = restaurant.get("image_base64")
+                        image_suggestion = restaurant.get("image_suggestion", "")
+                        if name and base64:
+                            self._add_image_aliases(registry, name, base64)
+                            # Also add the image_suggestion key directly
+                            if image_suggestion:
+                                registry[image_suggestion] = base64
 
         # Add common attraction keyword mappings
         # This helps match itinerary-style keys (e.g., "sensoji_temple") to activity images
@@ -740,7 +815,7 @@ class PresentationAgent:
     def _replace_image_placeholders(self, markdown: str, registry: Dict[str, str]) -> str:
         """
         Replace IMAGE_PLACEHOLDER:key patterns with actual base64 data.
-        Uses multiple matching strategies and falls back to SVG placeholder.
+        Uses multiple matching strategies and falls back to category-based images.
         """
         import re
 
@@ -753,6 +828,9 @@ class PresentationAgent:
             words = set(reg_key.split('_'))
             # Filter out very short words
             registry_word_sets[reg_key] = {w for w in words if len(w) > 2}
+
+        # Build category-based fallback images
+        fallback_images = self._build_category_fallbacks(registry)
 
         def replace_match(match):
             nonlocal matched_count, unmatched_keys
@@ -825,6 +903,13 @@ class PresentationAgent:
                             matched_count += 1
                             return base64_data
 
+            # Strategy 6: Category-based fallback
+            # If key looks like a hotel/restaurant/activity, use a related image
+            category = self._detect_category(raw_key)
+            if category and category in fallback_images:
+                matched_count += 1
+                return fallback_images[category]
+
             # No match found - create a placeholder SVG
             unmatched_keys.append(raw_key)
             label = raw_key.replace('_', ' ').title()
@@ -850,6 +935,63 @@ class PresentationAgent:
             print(f"  Available registry keys (sample): {list(registry.keys())[:10]}")
 
         return result
+
+    def _build_category_fallbacks(self, registry: Dict[str, str]) -> Dict[str, str]:
+        """Build fallback images for each category (hotel, restaurant, activity)"""
+        fallbacks = {}
+
+        # Find the first available image for each category type
+        hotel_keywords = ['hotel', 'inn', 'hostel', 'resort', 'lodge', 'accommodation']
+        restaurant_keywords = ['restaurant', 'cafe', 'ramen', 'sushi', 'food', 'dining', 'eat']
+        activity_keywords = ['temple', 'shrine', 'museum', 'park', 'tower', 'palace', 'attraction']
+
+        for key, base64 in registry.items():
+            key_lower = key.lower()
+
+            # Check for hotel category
+            if 'hotel' not in fallbacks:
+                if any(kw in key_lower for kw in hotel_keywords):
+                    fallbacks['hotel'] = base64
+
+            # Check for restaurant category
+            if 'restaurant' not in fallbacks:
+                if any(kw in key_lower for kw in restaurant_keywords):
+                    fallbacks['restaurant'] = base64
+
+            # Check for activity category
+            if 'activity' not in fallbacks:
+                if any(kw in key_lower for kw in activity_keywords):
+                    fallbacks['activity'] = base64
+
+            # Stop if all categories have fallbacks
+            if len(fallbacks) >= 3:
+                break
+
+        # Use hero as ultimate fallback for any missing category
+        if 'hero' in registry:
+            for category in ['hotel', 'restaurant', 'activity']:
+                if category not in fallbacks:
+                    fallbacks[category] = registry['hero']
+
+        return fallbacks
+
+    def _detect_category(self, key: str) -> Optional[str]:
+        """Detect the category of a placeholder key"""
+        key_lower = key.lower()
+
+        # Hotel patterns
+        if any(kw in key_lower for kw in ['hotel', 'inn', 'hostel', 'resort', 'lodge', 'prince', 'hilton', 'marriott', 'hyatt']):
+            return 'hotel'
+
+        # Restaurant patterns
+        if any(kw in key_lower for kw in ['restaurant', 'cafe', 'ramen', 'sushi', 'ichiran', 'dining', 'food', 'eat', 'lunch', 'dinner', 'breakfast']):
+            return 'restaurant'
+
+        # Activity patterns (default for other location-like keys)
+        if any(kw in key_lower for kw in ['temple', 'shrine', 'museum', 'park', 'tower', 'palace', 'castle', 'market', 'district', 'crossing']):
+            return 'activity'
+
+        return None
 
     def _fallback_format(
         self,
