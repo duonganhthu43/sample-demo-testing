@@ -10,6 +10,12 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 
 from ..utils.config import get_config
+from ..utils.schemas import (
+    get_response_format,
+    SWOT_ANALYSIS_SCHEMA,
+    COMPETITIVE_ANALYSIS_SCHEMA,
+    TREND_ANALYSIS_SCHEMA,
+)
 from ..tools import create_swot_visualization
 
 
@@ -103,7 +109,7 @@ Be specific and evidence-based. Minimum 3 items per category."""
                     {"role": "system", "content": "You are a strategic business analyst expert in SWOT analysis."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("swot_analysis", SWOT_ANALYSIS_SCHEMA),
                 **self.llm_params
             )
 
@@ -183,7 +189,7 @@ Be specific about competitive dynamics."""
                     {"role": "system", "content": "You are a competitive strategy analyst."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("competitive_analysis", COMPETITIVE_ANALYSIS_SCHEMA),
                 **self.llm_params
             )
 
@@ -270,7 +276,7 @@ Focus on actionable trend insights."""
                     {"role": "system", "content": "You are a market trend analyst and futurist."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("trend_analysis", TREND_ANALYSIS_SCHEMA),
                 **self.llm_params
             )
 

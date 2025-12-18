@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..utils.config import get_config
+from ..utils.schemas import get_response_format, RESEARCH_SYNTHESIS_SCHEMA
 from ..tools import WebSearchTool, DataExtractor
 
 
@@ -333,7 +334,7 @@ Focus on actionable insights and concrete facts. Be specific."""
                     {"role": "system", "content": "You are a research synthesis expert. Analyze data and provide structured insights."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("research_synthesis", RESEARCH_SYNTHESIS_SCHEMA),
                 **self.llm_params
             )
 

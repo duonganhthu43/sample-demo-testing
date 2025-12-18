@@ -10,6 +10,14 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 
 from ..utils.config import get_config
+from ..utils.schemas import (
+    get_response_format,
+    FINANCIAL_ANALYSIS_SCHEMA,
+    TECHNOLOGY_ANALYSIS_SCHEMA,
+    MARKET_SIZING_SCHEMA,
+    SENTIMENT_ANALYSIS_SCHEMA,
+    REGULATORY_ANALYSIS_SCHEMA,
+)
 
 
 @dataclass
@@ -101,7 +109,7 @@ Be specific and data-driven where possible."""
                     {"role": "system", "content": "You are a financial analyst expert."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("financial_analysis", FINANCIAL_ANALYSIS_SCHEMA),
                 **self.llm_params
             )
 
@@ -188,7 +196,7 @@ Provide technology analysis in JSON format:
                     {"role": "system", "content": "You are a technology analyst."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("technology_analysis", TECHNOLOGY_ANALYSIS_SCHEMA),
                 **self.llm_params
             )
 
@@ -277,7 +285,7 @@ Provide market sizing analysis in JSON format:
                     {"role": "system", "content": "You are a market sizing analyst."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("market_sizing", MARKET_SIZING_SCHEMA),
                 **self.llm_params
             )
 
@@ -363,7 +371,7 @@ Provide sentiment analysis in JSON format:
                     {"role": "system", "content": "You are a sentiment analysis expert."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("sentiment_analysis", SENTIMENT_ANALYSIS_SCHEMA),
                 **self.llm_params
             )
 
@@ -447,7 +455,7 @@ Provide regulatory analysis in JSON format:
                     {"role": "system", "content": "You are a regulatory analyst."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("regulatory_analysis", REGULATORY_ANALYSIS_SCHEMA),
                 **self.llm_params
             )
 
