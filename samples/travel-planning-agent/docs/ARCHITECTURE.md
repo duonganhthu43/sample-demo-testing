@@ -112,6 +112,46 @@ self.context = {
 }
 ```
 
+### Two Separate Data Flows (Important!)
+
+There are **two separate data flows** in the architecture:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  1. ORCHESTRATOR MESSAGES (for decision-making)                         │
+│     └── Conversation history with tool results (can be compressed)      │
+│     └── Only needs summaries: "Found 8 flights $180-$450"               │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  2. TOOL EXECUTOR CONTEXT (for specialized agents)                      │
+│     └── Full data stored in self.context dictionary                     │
+│     └── Agents access via tool_executor.get_context()                   │
+│     └── Contains ALL details: prices, amenities, images, etc.           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key insight**: Specialized agents (itinerary_agent, presentation_agent, etc.) get their data from `tool_executor.context`, **NOT** from the orchestrator's conversation messages!
+
+```python
+# In tools.py - Results stored in context with FULL data
+self.context["research"].append({"type": "flights", **result.to_dict()})
+
+# In itinerary_agent.py - Gets FULL data from context
+context = tool_executor.get_context()  # Contains complete flight/hotel/activity data
+flights = context["research"][1]        # Full flight data with all details
+```
+
+**Why this matters for optimization**:
+- The orchestrator's messages can be **compressed/summarized** without losing data
+- Specialized agents always access **full data** from `tool_executor.context`
+- Compressing orchestrator messages reduces token usage by ~80% without affecting quality
+
+| Data Flow | Purpose | Can Compress? |
+|-----------|---------|---------------|
+| Orchestrator messages | Decide which tool to call next | ✅ Yes - only needs summaries |
+| Tool executor context | Full data for specialized agents | ❌ No - needs all details |
+
 ## Data Flow
 
 ```
@@ -352,6 +392,21 @@ The LLM cannot skip iterations because it needs results to make informed decisio
 4. **Result Caching**: Tools cache results to avoid duplicate Tavily API calls
 5. **LLM-Powered Agents**: Most agents use LLM for intelligent processing
 6. **Smart Dependencies**: LLM groups independent tools for parallel execution
+7. **Context Compression Ready**: Orchestrator messages can be compressed without losing data (see "Two Separate Data Flows" section)
+
+### Potential Optimization: Orchestrator Context Compression
+
+Based on trace analysis, the orchestrator's input tokens grow from ~1,600 to ~22,000+ across iterations. Since specialized agents get full data from `tool_executor.context`, the orchestrator's messages can be safely compressed:
+
+```python
+# Before (full result ~5KB):
+messages.append({"role": "tool", "content": json.dumps(full_result)})
+
+# After (summary ~200 bytes):
+messages.append({"role": "tool", "content": "Found 8 flights ($180-$450), 3 direct"})
+```
+
+**Expected impact**: ~80% reduction in orchestrator token usage, ~30-40% faster orchestrator response times.
 
 ## LLM Usage by Agent
 

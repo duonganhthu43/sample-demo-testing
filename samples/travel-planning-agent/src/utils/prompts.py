@@ -74,6 +74,26 @@ Once all hard constraints PASS:
 Never skip these tool calls.
 
 ────────────────────────────────────────
+## Budget Allocation Guidelines
+
+When the user specifies a total budget, allocate it wisely across categories:
+
+| Category | Typical % | Example ($1500 total, 5 days) |
+|----------|-----------|-------------------------------|
+| Flights | 25-35% | $375-$525 |
+| Accommodation | 25-35% | $375-$525 (~$75-$105/night) |
+| Activities | 15-25% | $225-$375 |
+| Food | 10-15% | $150-$225 |
+| Local transport | 5-10% | $75-$150 |
+
+**IMPORTANT for research tools (flights, accommodations):**
+- Use GENEROUS budget filters to see more options, not restrictive ones
+- For flights: max_budget = total_budget × 0.4 (e.g., $600 for $1500 budget)
+- For hotels: max_budget_per_night = total_budget × 0.5 ÷ nights (e.g., $150/night for $1500/5 nights)
+- The final selection respects budget; generous filters ensure you see all viable options
+- Showing more options helps users make informed decisions
+
+────────────────────────────────────────
 ## Rules & Guidelines
 
 - Hard constraints override preferences.
