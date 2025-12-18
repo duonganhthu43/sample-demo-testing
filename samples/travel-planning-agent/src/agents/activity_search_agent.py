@@ -12,8 +12,8 @@ from ..utils.schemas import get_response_format, ACTIVITY_SEARCH_SCHEMA
 
 def _get_image_util():
     """Lazy import to avoid circular dependency"""
-    from ..tools.image_utils import download_and_encode_base64
-    return download_and_encode_base64
+    from ..tools.image_utils import download_and_encode_base64, search_image_for_item, search_images_parallel
+    return download_and_encode_base64, search_image_for_item, search_images_parallel
 
 
 ACTIVITY_AGENT_TOOLS = [
@@ -361,20 +361,30 @@ class ActivitySearchTool:
 
         result = self.agent.search(destination, interests)
 
-        # Download images for activities
-        self._assign_images(result.get("activities", []))
+        # Download images for activities using item-specific search
+        self._assign_images(result.get("activities", []), destination)
 
         ActivitySearchTool._cache[cache_key] = result
         return self._apply_filters(result, interests, max_budget_per_activity, include_free)
 
-    def _assign_images(self, activities: List[Dict[str, Any]]) -> None:
-        download_fn = _get_image_util()
-        for i, activity in enumerate(activities):
-            if i < len(self.agent.image_urls):
-                image_url = self.agent.image_urls[i]
-                activity["image_url"] = image_url
-                print(f"  Downloading image for {activity.get('name', 'activity')}...")
-                activity["image_base64"] = download_fn(image_url)
+    def _assign_images(self, activities: List[Dict[str, Any]], destination: str) -> None:
+        """Assign images to activities using parallel Tavily searches."""
+        _, _, search_images_parallel_fn = _get_image_util()
+
+        # Use parallel image search for better performance
+        image_results = search_images_parallel_fn(
+            items=activities,
+            destination=destination,
+            tavily_api_key=self.config.search.tavily_api_key,
+            item_type="activity",
+            max_workers=5
+        )
+
+        # Assign results back to activities
+        for activity in activities:
+            name = activity.get("name", "")
+            if name and name in image_results and image_results[name]:
+                activity["image_base64"] = image_results[name]
 
     def _apply_filters(
         self,

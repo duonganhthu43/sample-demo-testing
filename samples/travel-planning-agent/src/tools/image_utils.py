@@ -186,3 +186,207 @@ def get_image_from_urls(
 
     # Return placeholder if all URLs failed
     return create_placeholder_svg(fallback_label, max_width, max_height)
+
+
+# Cache for item-specific image searches
+_item_image_cache: Dict[str, Optional[str]] = {}
+
+
+def search_images_parallel(
+    items: list,
+    destination: str,
+    tavily_api_key: str,
+    item_type: str = "activity",
+    max_workers: int = 5,
+    max_width: int = 400,
+    max_height: int = 300
+) -> Dict[str, Optional[str]]:
+    """
+    Search for images for multiple items in parallel.
+
+    Args:
+        items: List of dicts with 'name' key (e.g., hotels, restaurants, activities)
+        destination: Destination city/location for context
+        tavily_api_key: Tavily API key
+        item_type: Type of item ("restaurant", "hotel", "activity", "attraction")
+        max_workers: Maximum concurrent threads (default 5)
+        max_width: Maximum width for downloaded images
+        max_height: Maximum height for downloaded images
+
+    Returns:
+        Dict mapping item name to base64 data URI (or None if not found)
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: Dict[str, Optional[str]] = {}
+    items_to_search = []
+
+    # Filter items that need image search
+    for item in items:
+        name = item.get("name", "")
+        if not name:
+            continue
+        # Check cache first
+        cache_key = f"{name.lower()}_{destination.lower()}_{item_type}"
+        if cache_key in _item_image_cache:
+            results[name] = _item_image_cache[cache_key]
+        else:
+            items_to_search.append(item)
+
+    if not items_to_search:
+        return results
+
+    print(f"  Searching images for {len(items_to_search)} {item_type}s in parallel...")
+
+    def search_single(item: Dict) -> tuple:
+        name = item.get("name", "")
+        base64_img = search_image_for_item(
+            item_name=name,
+            item_type=item_type,
+            destination=destination,
+            tavily_api_key=tavily_api_key,
+            max_width=max_width,
+            max_height=max_height
+        )
+        return name, base64_img
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(search_single, item): item for item in items_to_search}
+
+        for future in as_completed(futures):
+            try:
+                name, base64_img = future.result()
+                results[name] = base64_img
+                if base64_img:
+                    print(f"    Found image for {name}")
+            except Exception as e:
+                item = futures[future]
+                print(f"    Image search failed for {item.get('name', 'unknown')}: {e}")
+                results[item.get("name", "")] = None
+
+    return results
+
+
+def search_image_for_item(
+    item_name: str,
+    item_type: str,
+    destination: str,
+    tavily_api_key: str,
+    max_width: int = 400,
+    max_height: int = 300
+) -> Optional[str]:
+    """
+    Search for a specific image for an item using Tavily API.
+
+    Args:
+        item_name: Name of the item (e.g., "Hajime Restaurant", "Tokyo Tower")
+        item_type: Type of item ("restaurant", "hotel", "activity", "attraction")
+        destination: Destination city/location for context
+        tavily_api_key: Tavily API key
+        max_width: Maximum width for downloaded images
+        max_height: Maximum height for downloaded images
+
+    Returns:
+        Base64 data URI string or None if search fails
+    """
+    # Create cache key
+    cache_key = f"{item_name.lower()}_{destination.lower()}_{item_type}"
+
+    if cache_key in _item_image_cache:
+        return _item_image_cache[cache_key]
+
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=tavily_api_key)
+
+        # Build a targeted search query for the specific item
+        if item_type == "restaurant":
+            query = f"{item_name} restaurant {destination} interior food photo"
+        elif item_type == "hotel":
+            query = f"{item_name} hotel {destination} exterior building photo"
+        elif item_type in ["activity", "attraction"]:
+            query = f"{item_name} {destination} tourist attraction photo"
+        else:
+            query = f"{item_name} {destination} photo"
+
+        # Search with include_images=True
+        response = client.search(
+            query=query,
+            max_results=3,
+            search_depth="basic",
+            include_images=True
+        )
+
+        # Get images from response
+        images = response.get("images", [])
+
+        # Try each image URL until one works
+        for img in images:
+            url = img if isinstance(img, str) else img.get("url", "")
+            if url and _is_likely_photo(url):
+                base64_img = download_and_encode_base64(url, max_width, max_height)
+                if base64_img:
+                    _item_image_cache[cache_key] = base64_img
+                    return base64_img
+
+        # If no filtered images worked, try any image
+        for img in images:
+            url = img if isinstance(img, str) else img.get("url", "")
+            if url:
+                base64_img = download_and_encode_base64(url, max_width, max_height)
+                if base64_img:
+                    _item_image_cache[cache_key] = base64_img
+                    return base64_img
+
+        _item_image_cache[cache_key] = None
+        return None
+
+    except Exception as e:
+        print(f"  Item image search failed for '{item_name}': {str(e)}")
+        _item_image_cache[cache_key] = None
+        return None
+
+
+def _is_likely_photo(url: str) -> bool:
+    """
+    Filter out URLs that are unlikely to be relevant photos.
+    Returns True if the URL seems like a real photo.
+    """
+    url_lower = url.lower()
+
+    # Skip common non-photo patterns
+    skip_patterns = [
+        'anime', 'cartoon', 'manga', 'illustration',
+        'avatar', 'icon', 'logo', 'badge',
+        'emoji', 'sticker', 'clipart',
+        'pixiv', 'deviantart', 'artstation',
+        'pinterest.com/pin',  # Pinterest pins often aren't the actual image
+        'facebook.com', 'twitter.com', 'x.com',
+        'gravatar', 'profile', 'user_avatar',
+    ]
+
+    for pattern in skip_patterns:
+        if pattern in url_lower:
+            return False
+
+    # Prefer URLs from known photo/travel sources
+    good_sources = [
+        'tripadvisor', 'booking.com', 'hotels.com',
+        'expedia', 'agoda', 'yelp',
+        'unsplash', 'pexels', 'shutterstock',
+        'gettyimages', 'istockphoto',
+        'wikimedia', 'wikipedia',
+        'cloudfront', 'amazonaws',
+        'googleusercontent',
+    ]
+
+    # If from a known good source, accept it
+    for source in good_sources:
+        if source in url_lower:
+            return True
+
+    # Accept common image extensions
+    if any(ext in url_lower for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+        return True
+
+    return True  # Default to accepting if no red flags

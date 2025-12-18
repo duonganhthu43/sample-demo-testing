@@ -380,6 +380,10 @@ HOTEL_SEARCH_SCHEMA = {
                         "type": "string",
                         "description": "Area/neighborhood location"
                     },
+                    "address": {
+                        "type": "string",
+                        "description": "Full street address for navigation/taxi booking (if available)"
+                    },
                     "rating": {
                         "type": "number",
                         "description": "Rating out of 5.0"
@@ -410,7 +414,7 @@ HOTEL_SEARCH_SCHEMA = {
                         "description": "Source URL if available, empty string otherwise"
                     }
                 },
-                "required": ["name", "location", "rating", "price_per_night_usd", "amenities", "distance_to_center", "near_transport", "description", "source_url"],
+                "required": ["name", "location", "address", "rating", "price_per_night_usd", "amenities", "distance_to_center", "near_transport", "description", "source_url"],
                 "additionalProperties": False
             }
         },

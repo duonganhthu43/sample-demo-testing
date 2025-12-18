@@ -13,8 +13,8 @@ from ..utils.schemas import get_response_format, RESTAURANT_SEARCH_SCHEMA
 
 def _get_image_util():
     """Lazy import to avoid circular dependency"""
-    from ..tools.image_utils import download_and_encode_base64
-    return download_and_encode_base64
+    from ..tools.image_utils import download_and_encode_base64, search_image_for_item, search_images_parallel
+    return download_and_encode_base64, search_image_for_item, search_images_parallel
 
 
 RESTAURANT_AGENT_TOOLS = [
@@ -384,20 +384,30 @@ class RestaurantSearchTool:
 
         result = self.agent.search(destination, areas, cuisine_types, meal_type)
 
-        # Download images for restaurants
-        self._assign_images(result.get("restaurants", []))
+        # Download images for restaurants using item-specific search
+        self._assign_images(result.get("restaurants", []), destination)
 
         RestaurantSearchTool._cache[cache_key] = result
         return self._apply_filters(result, areas, max_budget)
 
-    def _assign_images(self, restaurants: List[Dict[str, Any]]) -> None:
-        download_fn = _get_image_util()
-        for i, restaurant in enumerate(restaurants):
-            if i < len(self.agent.image_urls):
-                image_url = self.agent.image_urls[i]
-                restaurant["image_url"] = image_url
-                print(f"  Downloading image for {restaurant.get('name', 'restaurant')}...")
-                restaurant["image_base64"] = download_fn(image_url)
+    def _assign_images(self, restaurants: List[Dict[str, Any]], destination: str) -> None:
+        """Assign images to restaurants using parallel Tavily searches."""
+        _, _, search_images_parallel_fn = _get_image_util()
+
+        # Use parallel image search for better performance
+        image_results = search_images_parallel_fn(
+            items=restaurants,
+            destination=destination,
+            tavily_api_key=self.config.search.tavily_api_key,
+            item_type="restaurant",
+            max_workers=5
+        )
+
+        # Assign results back to restaurants
+        for restaurant in restaurants:
+            name = restaurant.get("name", "")
+            if name and name in image_results and image_results[name]:
+                restaurant["image_base64"] = image_results[name]
 
     def _apply_filters(
         self,

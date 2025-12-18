@@ -361,7 +361,7 @@ class PresentationAgent:
         days = itinerary.get("days", [])
         if days:
             # Process days to ensure image placeholders for activities
-            processed_days = self._add_itinerary_image_placeholders(days)
+            processed_days = self._add_itinerary_image_placeholders(days, accommodation)
             content_parts.append({
                 "type": "text",
                 "text": f"## Daily Itinerary\n\n```json\n{json.dumps(self._strip_base64_from_data(processed_days), indent=2, default=str)}\n```"
@@ -469,13 +469,34 @@ class PresentationAgent:
 
         return content_parts
 
-    def _add_itinerary_image_placeholders(self, days: List[Dict]) -> List[Dict]:
+    def _add_itinerary_image_placeholders(
+        self,
+        days: List[Dict],
+        accommodation: Optional[Dict] = None
+    ) -> List[Dict]:
         """
         Process itinerary days to ensure every activity has an image placeholder.
         Skips transport/flight items as specified in the schema.
+        Adds hotel images and address for check-in activities.
         """
         import copy
         import re
+
+        # Extract hotel info for check-in matching
+        hotel_name = None
+        hotel_image_key = None
+        hotel_address = None
+        hotel_location = None
+        if accommodation:
+            recommended = accommodation.get("recommended", {})
+            if recommended:
+                hotel_name = recommended.get("name", "")
+                hotel_address = recommended.get("address", "")
+                hotel_location = recommended.get("location", "")
+                if hotel_name:
+                    # Create image key from hotel name
+                    hotel_image_key = re.sub(r'[^a-z0-9\s]', '', hotel_name.lower())
+                    hotel_image_key = re.sub(r'\s+', '_', hotel_image_key.strip())
 
         processed_days = []
         for day in days:
@@ -492,6 +513,20 @@ class PresentationAgent:
                 activity = (item.get("activity") or "").lower()
 
                 if category in ["flight", "transport"] or "flight" in activity:
+                    continue
+
+                # Check for hotel check-in/check-out activities
+                if hotel_image_key and any(kw in activity for kw in ["check in", "check-in", "checkin", "hotel"]):
+                    item["image_suggestion"] = hotel_image_key
+                    # Add hotel address to the item for taxi booking/directions
+                    if hotel_address or hotel_location:
+                        address_info = hotel_address or hotel_location
+                        existing_location = item.get("location", "")
+                        if address_info and address_info not in existing_location:
+                            item["location"] = address_info
+                        # Also add to notes/description if not present
+                        if not item.get("hotel_address"):
+                            item["hotel_address"] = address_info
                     continue
 
                 # Generate image placeholder from activity name

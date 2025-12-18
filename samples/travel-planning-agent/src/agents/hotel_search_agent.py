@@ -12,8 +12,8 @@ from ..utils.schemas import get_response_format, HOTEL_SEARCH_SCHEMA
 
 def _get_image_util():
     """Lazy import to avoid circular dependency"""
-    from ..tools.image_utils import download_and_encode_base64
-    return download_and_encode_base64
+    from ..tools.image_utils import download_and_encode_base64, search_image_for_item, search_images_parallel
+    return download_and_encode_base64, search_image_for_item, search_images_parallel
 
 
 HOTEL_AGENT_TOOLS = [
@@ -240,7 +240,8 @@ Search for available hotels with prices, ratings, and locations."""
 1. Extract real hotel names, ratings, prices, and amenities
 2. Prices should be in USD per night
 3. Ratings out of 5.0
-4. Mark hotels as near_transport if they mention station, metro, or convenient location"""
+4. Mark hotels as near_transport if they mention station, metro, or convenient location
+5. Include full street address when available (useful for taxi booking and navigation)"""
 
             truncated = []
             total_chars = 0
@@ -260,7 +261,7 @@ Search for available hotels with prices, ratings, and locations."""
 {json.dumps(self.sources[:10], indent=2)}
 
 ## Task
-Extract all hotel options. Include names, prices, ratings, amenities, and locations."""
+Extract all hotel options. Include names, full addresses, prices, ratings, amenities, and locations."""
 
             client = self.config.get_llm_client(label="hotel_extraction")
 
@@ -357,20 +358,30 @@ class HotelSearchTool:
 
         result = self.agent.search(destination, check_in, check_out)
 
-        # Download images for hotels
-        self._assign_images(result.get("hotels", []))
+        # Download images for hotels using item-specific search
+        self._assign_images(result.get("hotels", []), destination)
 
         HotelSearchTool._cache[cache_key] = result
         return self._apply_filters(result, max_budget_per_night, prefer_near_transport, min_rating)
 
-    def _assign_images(self, hotels: List[Dict[str, Any]]) -> None:
-        download_fn = _get_image_util()
-        for i, hotel in enumerate(hotels):
-            if i < len(self.agent.image_urls):
-                image_url = self.agent.image_urls[i]
-                hotel["image_url"] = image_url
-                print(f"  Downloading image for {hotel.get('name', 'hotel')}...")
-                hotel["image_base64"] = download_fn(image_url)
+    def _assign_images(self, hotels: List[Dict[str, Any]], destination: str) -> None:
+        """Assign images to hotels using parallel Tavily searches."""
+        _, _, search_images_parallel_fn = _get_image_util()
+
+        # Use parallel image search for better performance
+        image_results = search_images_parallel_fn(
+            items=hotels,
+            destination=destination,
+            tavily_api_key=self.config.search.tavily_api_key,
+            item_type="hotel",
+            max_workers=5
+        )
+
+        # Assign results back to hotels
+        for hotel in hotels:
+            name = hotel.get("name", "")
+            if name and name in image_results and image_results[name]:
+                hotel["image_base64"] = image_results[name]
 
     def _apply_filters(
         self,
