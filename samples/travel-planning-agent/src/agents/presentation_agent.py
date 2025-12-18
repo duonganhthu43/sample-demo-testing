@@ -33,9 +33,9 @@ Create a well-structured markdown document with:
 1. **Header Section**
    - Trip title with destination and emoji
    - Travel dates prominently displayed
-   - **IMPORTANT: If a destination hero image (image_base64) is provided, embed it right after the title using:**
+   - **IMPORTANT: If a destination hero image is provided, embed it using the placeholder:**
      ```
-     ![Destination Name](data:image/jpeg;base64,...)
+     ![Destination Name](IMAGE_PLACEHOLDER:hero)
      ```
    - A horizontal rule separator
 
@@ -53,9 +53,9 @@ Create a well-structured markdown document with:
    - Add a brief note explaining why the selected flights were chosen
 
 4. **Accommodation Section**
-   - **IMPORTANT: For each hotel that has image_base64 data, embed the image:**
+   - **IMPORTANT: For each hotel that has image data, embed using its placeholder:**
      ```
-     ![Hotel Name](data:image/jpeg;base64,...)
+     ![Hotel Name](IMAGE_PLACEHOLDER:hotel_name)
      ```
    - Show ALL hotel options in a comparison table with columns:
      | Hotel | Location | Price/Night | Total | Rating | Near Transport | Amenities |
@@ -67,9 +67,9 @@ Create a well-structured markdown document with:
 5. **Day-by-Day Itinerary**
    - Each day as a subsection with day number and theme
    - Daily cost estimate
-   - **IMPORTANT: For each activity that has image_base64 data, embed the image before or alongside the activity:**
+   - **IMPORTANT: For each activity that has image data, embed using its placeholder:**
      ```
-     ![Activity Name](data:image/jpeg;base64,...)
+     ![Activity Name](IMAGE_PLACEHOLDER:activity_name)
      ```
    - Table format: Time | Activity | Location | Cost
    - Link activities if source URLs available
@@ -97,19 +97,39 @@ Create a well-structured markdown document with:
     - Disclaimer about prices/availability
     - Friendly sign-off
 
-## Image Embedding Guidelines
-- When an item has `has_image: true` AND `image_placeholder` field, embed it using:
-  ```
-  ![Display Name](PASTE_THE_image_placeholder_VALUE_HERE)
-  ```
-- **IMPORTANT**: Use the EXACT value from the `image_placeholder` field - do not modify it!
-- Example: If data shows `"image_placeholder": "IMAGE_PLACEHOLDER:sensoji_temple"`, use:
-  ```
-  ![Senso-ji Temple](IMAGE_PLACEHOLDER:sensoji_temple)
-  ```
-- The placeholder will be replaced with actual image data after formatting
-- For the hero image: `![Destination Name](IMAGE_PLACEHOLDER:hero)`
-- Place images prominently to make the document visually engaging
+## Image Embedding Guidelines - CRITICAL
+
+**YOU MUST EMBED ALL AVAILABLE IMAGES.** Images make the document visually engaging and professional.
+
+### How to embed images:
+1. Look for items with `"has_image": true` AND `"image_placeholder"` field
+2. Copy the EXACT `image_placeholder` value (e.g., `IMAGE_PLACEHOLDER:best_western`)
+3. Use it in markdown: `![Display Name](IMAGE_PLACEHOLDER:best_western)`
+
+### Required image placements:
+- **Hero image**: Always include `![Destination](IMAGE_PLACEHOLDER:hero)` after the title
+- **Hotels**: For EACH hotel with `has_image: true`, embed its image above or beside its entry
+- **Activities**: For EACH activity with `has_image: true`, embed its image in the day-by-day section
+- **Top attractions**: Feature images prominently for must-see attractions
+
+### Example - If hotel data shows:
+```json
+{"name": "Best Western", "has_image": true, "image_placeholder": "IMAGE_PLACEHOLDER:best_western"}
+```
+Then add in Accommodation section:
+```markdown
+![Best Western](IMAGE_PLACEHOLDER:best_western)
+```
+
+**IMPORTANT**:
+- Use the EXACT placeholder value - do not modify it!
+- **DO NOT add "data:image/jpeg;base64," prefix** - just use the raw placeholder
+- The placeholder will be automatically replaced with the full data URI after formatting
+- More images = better document quality
+- Aim for at least 5-10 embedded images if available
+
+**CORRECT**: `![Best Western](IMAGE_PLACEHOLDER:best_western)`
+**WRONG**: `![Best Western](data:image/jpeg;base64,IMAGE_PLACEHOLDER:best_western)`
 
 ## Formatting Guidelines
 - Use emojis appropriately (✈️ 🏨 📅 💰 🎒 ⚠️ ✅)
@@ -178,6 +198,9 @@ class PresentationAgent:
             )
 
             markdown = response.choices[0].message.content
+
+            # Strip markdown code fence wrapper if LLM added it
+            markdown = self._strip_code_fences(markdown)
 
             # Post-process: Replace IMAGE_PLACEHOLDER with actual base64 data
             markdown = self._replace_image_placeholders(markdown, image_registry)
@@ -390,6 +413,7 @@ class PresentationAgent:
         """
         Build a registry of image placeholders to base64 data.
         This keeps the actual base64 data out of the LLM context.
+        Creates multiple aliases for better matching.
         """
         registry = {}
         context = context or {}
@@ -399,19 +423,20 @@ class PresentationAgent:
         if hero:
             registry["hero"] = hero
 
-        # Add activity images
+        # Add activity images with multiple aliases
         for item in context.get("research") or []:
             if isinstance(item, dict) and item.get("type") == "activities":
                 for activity in item.get("activities", []):
                     if isinstance(activity, dict):
                         name = activity.get("name", "")
+                        description = activity.get("description", "")
                         base64 = activity.get("image_base64")
                         if name and base64:
-                            # Normalize key for matching
-                            key = self._normalize_placeholder_key(name)
-                            registry[key] = base64
+                            # Add multiple alias keys for the same image
+                            # Include description for better attraction name extraction
+                            self._add_image_aliases(registry, name, base64, description)
 
-        # Add hotel images
+        # Add hotel images with multiple aliases
         for item in context.get("research") or []:
             if isinstance(item, dict) and item.get("type") == "accommodations":
                 for hotel in item.get("hotels", []):
@@ -419,11 +444,86 @@ class PresentationAgent:
                         name = hotel.get("name", "")
                         base64 = hotel.get("image_base64")
                         if name and base64:
-                            key = self._normalize_placeholder_key(name)
-                            registry[key] = base64
+                            self._add_image_aliases(registry, name, base64)
 
-        print(f"Built image registry with {len(registry)} images")
+        print(f"Built image registry with {len(registry)} keys")
         return registry
+
+    def _add_image_aliases(
+        self,
+        registry: Dict[str, str],
+        name: str,
+        base64: str,
+        description: str = ""
+    ) -> None:
+        """Add multiple alias keys for better placeholder matching"""
+        # Primary key (normalized full name)
+        primary_key = self._normalize_placeholder_key(name)
+        registry[primary_key] = base64
+
+        # Extract meaningful keywords from name and add as aliases
+        keywords = self._extract_semantic_keywords(name)
+        for keyword in keywords:
+            if keyword not in registry:  # Don't overwrite existing
+                registry[keyword] = base64
+
+        # Extract attraction names from description (these are the actual place names)
+        if description:
+            attraction_names = self._extract_attraction_names(description)
+            for attraction in attraction_names:
+                normalized = self._normalize_placeholder_key(attraction)
+                if normalized and normalized not in registry:
+                    registry[normalized] = base64
+
+    def _extract_semantic_keywords(self, name: str) -> List[str]:
+        """
+        Extract meaningful keywords from a name for alias matching.
+        Uses dynamic extraction that works for any destination.
+        """
+        import re
+        keywords = []
+        name_lower = name.lower()
+
+        # 1. Add individual significant words (>3 chars, not stop words)
+        stop_words = {
+            'the', 'and', 'for', 'with', 'from', 'best', 'top', 'must', 'see',
+            'visit', 'guide', 'tour', 'review', 'tourist', 'attractions',
+            'things', 'japan', 'china', 'korea', 'france', 'italy', 'spain'
+        }
+        words = self._normalize_placeholder_key(name).split('_')
+        for word in words:
+            if len(word) > 3 and word not in stop_words:
+                keywords.append(word)
+
+        # 2. Create compound keys from significant word combinations
+        significant_words = [w for w in words if len(w) > 3 and w not in stop_words]
+        if len(significant_words) >= 2:
+            # Add pairs of significant words
+            for i in range(len(significant_words) - 1):
+                compound = f"{significant_words[i]}_{significant_words[i+1]}"
+                keywords.append(compound)
+
+        # 3. Handle hyphenated names (e.g., "senso-ji" -> "sensoji", "senso_ji")
+        if '-' in name_lower:
+            # Replace hyphens with nothing and underscore
+            no_hyphen = name_lower.replace('-', '')
+            underscore = name_lower.replace('-', '_')
+            keywords.append(self._normalize_placeholder_key(no_hyphen))
+            keywords.append(self._normalize_placeholder_key(underscore))
+
+        # 4. Add type suffixes as separate keywords for matching
+        # e.g., "Tokyo Tower" -> also index as "tower"
+        type_suffixes = ['temple', 'shrine', 'museum', 'palace', 'park', 'tower',
+                        'castle', 'market', 'district', 'garden', 'bridge', 'station']
+        for suffix in type_suffixes:
+            if suffix in name_lower:
+                # Add the word before the suffix + suffix (e.g., "tokyo_tower")
+                pattern = rf'(\w+)\s+{suffix}'
+                match = re.search(pattern, name_lower)
+                if match:
+                    keywords.append(f"{match.group(1)}_{suffix}")
+
+        return list(set(keywords))
 
     def _normalize_placeholder_key(self, name: str) -> str:
         """Normalize a name for use as a placeholder key"""
@@ -433,6 +533,71 @@ class PresentationAgent:
         key = re.sub(r'[^a-z0-9\s]', '', key)
         key = re.sub(r'\s+', '_', key)
         return key
+
+    def _strip_code_fences(self, text: str) -> str:
+        """
+        Strip markdown code fence wrapper if LLM added it.
+        LLMs sometimes wrap output in ```markdown ... ``` which breaks rendering.
+        """
+        import re
+        text = text.strip()
+
+        # Remove opening code fence (```markdown, ```md, or just ```)
+        text = re.sub(r'^```(?:markdown|md)?\s*\n?', '', text)
+
+        # Remove closing code fence
+        text = re.sub(r'\n?```\s*$', '', text)
+
+        return text.strip()
+
+    def _extract_attraction_names(self, text: str) -> List[str]:
+        """
+        Extract attraction/landmark names from text content.
+        Looks for proper nouns that are likely place names.
+        """
+        import re
+        attractions = []
+
+        # Pattern 1: Names with landmark suffixes (Temple, Shrine, Museum, etc.)
+        # e.g., "Sensoji Temple", "Meiji Shrine", "Tokyo Tower"
+        landmark_pattern = r'([A-Z][a-z]+(?:[-\s][A-Z]?[a-z]+)*)\s+(Temple|Shrine|Museum|Palace|Park|Tower|Castle|Market|Garden|Bridge|Station|Gyoen|Jingu|Imperial)'
+        for match in re.findall(landmark_pattern, text):
+            name = f"{match[0]} {match[1]}".strip()
+            if len(name) > 5:
+                attractions.append(name)
+                # Also add without suffix for flexible matching
+                attractions.append(match[0])
+
+        # Pattern 2: Japanese romanized names with suffixes
+        # e.g., "Senso-ji", "Meiji-jingu", "Shinjuku-gyoen"
+        japanese_pattern = r'([A-Z][a-z]+(?:-[a-z]+)?(?:\s+[A-Z][a-z]+)*)'
+        for match in re.findall(japanese_pattern, text):
+            if any(s in match.lower() for s in ['-ji', '-jingu', '-dera', '-koen', '-en', 'gyoen']):
+                attractions.append(match)
+                # Also add without hyphen
+                attractions.append(match.replace('-', ''))
+
+        # Pattern 3: Well-known district/area names
+        # e.g., "Shibuya", "Shinjuku", "Asakusa", "Harajuku"
+        district_pattern = r'\b(Shibuya|Shinjuku|Asakusa|Harajuku|Ginza|Akihabara|Ueno|Roppongi|Odaiba|Ikebukuro|Omoide Yokocho|Omoide|Yokocho)\b'
+        for match in re.findall(district_pattern, text, re.IGNORECASE):
+            attractions.append(match)
+
+        # Pattern 4: Specific landmark names commonly mentioned
+        specific_pattern = r'\b(Sensoji|Senso-ji|Meiji|Tokyo Tower|Skytree|Imperial Palace|Tsukiji|Shibuya Crossing|Takeshita|Nakamise)\b'
+        for match in re.findall(specific_pattern, text, re.IGNORECASE):
+            attractions.append(match)
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique = []
+        for a in attractions:
+            a_lower = a.lower().replace('-', '').replace(' ', '')
+            if a_lower not in seen and len(a) > 3:
+                seen.add(a_lower)
+                unique.append(a)
+
+        return unique
 
     def _strip_base64_from_data(self, data: Any) -> Any:
         """
@@ -481,6 +646,13 @@ class PresentationAgent:
         matched_count = 0
         unmatched_keys = []
 
+        # Pre-compute word sets for registry keys (for faster matching)
+        registry_word_sets = {}
+        for reg_key in registry:
+            words = set(reg_key.split('_'))
+            # Filter out very short words
+            registry_word_sets[reg_key] = {w for w in words if len(w) > 2}
+
         def replace_match(match):
             nonlocal matched_count, unmatched_keys
             raw_key = match.group(1)
@@ -503,20 +675,54 @@ class PresentationAgent:
                     matched_count += 1
                     return base64_data
 
-            # Strategy 4: Word overlap matching (for cases like "sensoji_temple" vs "sensoji")
+            # Strategy 4: Word overlap matching with scoring
             key_words = set(normalized.split('_'))
+            key_words = {w for w in key_words if len(w) > 2}  # Filter short words
+
+            best_match = None
+            best_score = 0
+
             for reg_key, base64_data in registry.items():
-                reg_words = set(reg_key.split('_'))
-                # If there's significant word overlap (at least 1 non-trivial word)
+                reg_words = registry_word_sets.get(reg_key, set())
+
+                # Calculate overlap score
                 overlap = key_words & reg_words
-                if overlap and any(len(w) > 2 for w in overlap):
-                    matched_count += 1
-                    return base64_data
+                if overlap:
+                    # Score: number of matching chars in overlapping words
+                    score = sum(len(w) for w in overlap)
+                    # Bonus for matching significant words (>4 chars)
+                    score += sum(2 for w in overlap if len(w) > 4)
+
+                    if score > best_score:
+                        best_score = score
+                        best_match = base64_data
+
+            # Require minimum score to accept match (at least one 4+ char word)
+            if best_match and best_score >= 4:
+                matched_count += 1
+                return best_match
+
+            # Strategy 5: Fuzzy single-word match for compound keys
+            # e.g., "sensoji_temple" should match registry key "sensoji"
+            for key_word in key_words:
+                if len(key_word) >= 4:  # Only match on significant words
+                    for reg_key, base64_data in registry.items():
+                        if key_word == reg_key or key_word in reg_key:
+                            matched_count += 1
+                            return base64_data
 
             # No match found - create a placeholder SVG
             unmatched_keys.append(raw_key)
             label = raw_key.replace('_', ' ').title()
             return create_placeholder_svg(label, width=400, height=250)
+
+        # First, fix any cases where LLM added data URI prefix before placeholder
+        # e.g., "data:image/jpeg;base64,IMAGE_PLACEHOLDER:hero" -> "IMAGE_PLACEHOLDER:hero"
+        markdown = re.sub(
+            r'data:image/[a-z]+;base64,\s*(IMAGE_PLACEHOLDER:)',
+            r'\1',
+            markdown
+        )
 
         # Replace all IMAGE_PLACEHOLDER:xxx patterns
         pattern = r'IMAGE_PLACEHOLDER:([^)\s]+)'
@@ -527,7 +733,7 @@ class PresentationAgent:
             print(f"  Replaced {matched_count} image placeholders with actual images")
         if unmatched_keys:
             print(f"  Warning: {len(unmatched_keys)} placeholders not matched: {unmatched_keys[:5]}")
-            print(f"  Available registry keys: {list(registry.keys())[:10]}")
+            print(f"  Available registry keys (sample): {list(registry.keys())[:10]}")
 
         return result
 

@@ -202,6 +202,26 @@ def main():
             print(f"  Estimated Cost: ${result.itinerary.get('total_estimated_cost', 'N/A')}")
             print()
 
+        # Save presentation to file if available (with thread_id for comparison)
+        if result.presentation:
+            thread_id = result.thread_id or "unknown"
+            output_dir = Path(__file__).parent / "outputs"
+            output_dir.mkdir(exist_ok=True)
+            markdown = result.presentation.get("markdown", "")
+
+            if markdown:
+                # Save markdown version
+                md_file = output_dir / f"travel_plan_{thread_id}.md"
+                with open(md_file, "w") as f:
+                    f.write(markdown)
+
+                # Check for embedded images
+                image_count = markdown.count("data:image/")
+
+                print(f"Saved presentation: {md_file}")
+                print(f"  Contains {image_count} embedded images")
+                print()
+
     except Exception as e:
         print(f"\nDemo failed: {str(e)}")
         import traceback

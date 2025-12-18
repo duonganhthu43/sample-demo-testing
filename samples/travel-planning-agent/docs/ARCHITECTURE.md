@@ -268,6 +268,7 @@ This allows the demo to work without any real API keys.
 | `src/agents/presentation_agent.py` | Markdown formatting for final output |
 | `src/utils/config.py` | Configuration management |
 | `src/utils/prompts.py` | System prompts |
+| `src/utils/schemas.py` | JSON schemas for structured outputs |
 
 ## Tool Dependencies & Parallel Execution
 
@@ -448,3 +449,225 @@ Uses LLM to generate intelligent itineraries with:
 
 ### PresentationAgent
 Uses LLM to generate beautiful, context-aware markdown formatting with tables, checklists, and links.
+
+## Structured Outputs (JSON Schema)
+
+The agent uses OpenAI's **Structured Outputs** feature to ensure LLM responses are always valid, schema-compliant JSON. This eliminates parsing errors and provides type-safe responses.
+
+### Schema Definitions
+
+Located in `src/utils/schemas.py`:
+
+```python
+# Helper function to create response_format dict
+def get_response_format(schema_name: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": schema_name,
+            "schema": schema,
+            "strict": True  # Enforces exact schema compliance
+        }
+    }
+```
+
+### Available Schemas
+
+| Schema | Used By | Purpose |
+|--------|---------|---------|
+| `ITINERARY_SCHEMA` | ItineraryAgent | Day-by-day itinerary with schedule, costs, packing list |
+| `DESTINATION_EXTRACTION_SCHEMA` | ResearchAgent | Visa, language, currency, cultural tips, safety info |
+| `WEATHER_FORECAST_SCHEMA` | WeatherService | Daily forecasts, averages, packing suggestions |
+
+### Schema Requirements for Strict Mode
+
+OpenAI's strict mode requires:
+1. **All properties in `required` array** - Every property defined must be listed as required
+2. **`additionalProperties: false`** - No extra fields allowed beyond schema definition
+3. **Explicit types** - All fields must have explicit type definitions
+
+Example from `ITINERARY_SCHEMA`:
+```python
+{
+    "type": "object",
+    "properties": {
+        "days": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "day": {"type": "integer"},
+                    "date": {"type": "string"},
+                    "theme": {"type": "string"},
+                    "schedule": {...},
+                    "day_cost": {"type": "number"}
+                },
+                "required": ["day", "date", "theme", "schedule", "day_cost"],
+                "additionalProperties": False
+            }
+        },
+        "total_estimated_cost": {"type": "number"},
+        "summary": {"type": "string"},
+        "packing_list": {"type": "array", "items": {"type": "string"}},
+        "important_notes": {"type": "array", "items": {"type": "string"}}
+    },
+    "required": ["days", "total_estimated_cost", "summary", "packing_list", "important_notes"],
+    "additionalProperties": False
+}
+```
+
+### Fallback Handling
+
+For LLM providers that don't support `response_format` with JSON schema, agents gracefully fall back:
+
+```python
+try:
+    response = client.chat.completions.create(
+        model=self.config.llm.model,
+        messages=messages,
+        response_format=get_response_format("itinerary", ITINERARY_SCHEMA),
+        ...
+    )
+except Exception as e:
+    msg = str(e).lower()
+    if "response_format" in msg or "unknown" in msg or "unsupported" in msg:
+        # Fallback: retry without response_format
+        response = client.chat.completions.create(
+            model=self.config.llm.model,
+            messages=messages,
+            ...
+        )
+```
+
+### Benefits
+
+1. **Guaranteed Valid JSON**: No parsing errors or malformed responses
+2. **Type Safety**: Fields always have expected types (string, number, array, etc.)
+3. **Consistent Structure**: Every response follows the exact same shape
+4. **Better Error Messages**: Schema violations are caught by the API, not in application code
+
+## Image Handling Architecture
+
+### Why Images Don't Appear in Traces
+
+The presentation agent embeds images into the final markdown output, but **images are NOT visible in the LLM traces**. This is **by design** for efficiency reasons.
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  WHY IMAGES ARE NOT IN TRACES                                                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. LLM CALL (traced in vLLora)                                              │
+│     ├── Input: context data + image registry (base64 data)                   │
+│     ├── Output: markdown with IMAGE_PLACEHOLDER:xxx patterns                 │
+│     └── Why? Base64 images are HUGE (50KB+ each). Generating them            │
+│             directly would waste tokens and slow down the LLM.               │
+│                                                                              │
+│  2. POST-PROCESSING (NOT traced - happens after LLM call)                    │
+│     ├── Input: markdown with placeholders + image registry                   │
+│     ├── Process: _replace_image_placeholders() matches & substitutes         │
+│     └── Output: final markdown with embedded base64 images                   │
+│                                                                              │
+│  Result: Traces show placeholders, saved files show actual images            │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### The Placeholder Pattern
+
+Instead of asking the LLM to generate base64 data (impossible) or copy it from input (wasteful), we use a **placeholder pattern**:
+
+```python
+# LLM generates this in markdown:
+"![Tokyo Skyline](IMAGE_PLACEHOLDER:tokyo_skyline)"
+"![Sensoji Temple](IMAGE_PLACEHOLDER:sensoji_temple)"
+
+# Post-processing replaces with actual base64:
+"![Tokyo Skyline](data:image/jpeg;base64,/9j/4AAQSkZJRg...)"
+```
+
+### Image Registry Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  COMPLETE IMAGE FLOW                                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Step 1: Collection (during research_activities)                            │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │ ActivitySearchTool.search() → Tavily API returns image URLs        │     │
+│  │ ActivitySearchTool._get_activity_images() → downloads & converts   │     │
+│  │ Returns: {"name": "Sensoji Temple", "images": ["base64..."]}       │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│                               │                                             │
+│                               ▼                                             │
+│  Step 2: Storage (in tool_executor.context)                                 │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │ context["research"]["activities"]["results"][0]["images"] = [...]  │     │
+│  │ Images stored as base64 strings in the activity data               │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│                               │                                             │
+│                               ▼                                             │
+│  Step 3: Registry Building (in PresentationAgent.format_presentation)      │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │ _build_image_registry() scans context for all images               │     │
+│  │ _add_image_aliases() creates multiple keys for fuzzy matching      │     │
+│  │ Returns: {"sensoji_temple": "base64...", "temple": "base64..."...} │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│                               │                                             │
+│                               ▼                                             │
+│  Step 4: LLM Generation (TRACED in vLLora)                                  │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │ LLM receives: registry keys as available_images list               │     │
+│  │ LLM generates: markdown with IMAGE_PLACEHOLDER:xxx patterns        │     │
+│  │ Traces show: "IMAGE_PLACEHOLDER:sensoji_temple" (not base64!)      │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│                               │                                             │
+│                               ▼                                             │
+│  Step 5: Post-Processing (NOT traced - Python code after LLM)               │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │ _replace_image_placeholders() finds all IMAGE_PLACEHOLDER:xxx      │     │
+│  │ 5-strategy fuzzy matching: exact → normalized → partial → word     │     │
+│  │   overlap → single-word fallback                                   │     │
+│  │ Replaces with: data:image/jpeg;base64,/9j/4AAQ...                  │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│                               │                                             │
+│                               ▼                                             │
+│  Step 6: Final Output (saved to file)                                       │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │ outputs/travel_plan_{thread_id}.md contains embedded images        │     │
+│  │ Can be opened in any markdown viewer to see actual images          │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Fuzzy Matching Strategies
+
+The placeholder-to-image matching uses 5 strategies (in order of priority):
+
+| Strategy | Example Match | Priority |
+|----------|---------------|----------|
+| Exact match | `sensoji_temple` → `sensoji_temple` | 1 (highest) |
+| Normalized match | `Sensoji Temple` → `sensoji_temple` | 2 |
+| Partial match | `sensoji` found in `sensoji_temple_tokyo` | 3 |
+| Word overlap scoring | `tokyo_temple` matches `sensoji_temple` (1 word overlap) | 4 |
+| Single-word fallback | `temple` → first key containing "temple" | 5 (lowest) |
+
+### Why This Design?
+
+1. **Token Efficiency**: Base64 images are 50KB+ each. Embedding 10 images would add 500KB+ to LLM input/output, massively increasing costs and latency.
+
+2. **Clean Traces**: vLLora traces show the actual LLM reasoning, not bloated base64 strings.
+
+3. **Flexible Matching**: LLM can use semantic names (`sensoji_temple`) without knowing exact registry keys.
+
+4. **Separation of Concerns**: LLM focuses on content creation; Python handles data embedding.
+
+### Debugging Image Issues
+
+If images are missing in the final output:
+
+1. **Check registry**: Look at `image_registry` keys in the presentation agent logs
+2. **Check placeholders**: See what `IMAGE_PLACEHOLDER:xxx` patterns the LLM generated
+3. **Check matching**: Look for "placeholder not matched" warnings in output
+4. **Add aliases**: The `_add_image_aliases()` method creates multiple keys for fuzzy matching

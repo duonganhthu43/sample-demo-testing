@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
 
 from ..utils.config import get_config
+from ..utils.schemas import get_response_format, DESTINATION_EXTRACTION_SCHEMA
 from ..tools import FlightSearchTool, HotelSearchTool, ActivitySearchTool
 
 
@@ -283,7 +284,7 @@ class ResearchAgent:
                             "content": user_content  # Array of {"type": "text", "text": ...}
                         }
                     ],
-                    response_format={"type": "json_object"},
+                    response_format=get_response_format("destination_extraction", DESTINATION_EXTRACTION_SCHEMA),
                     temperature=0.2,
                     max_tokens=1500
                 )

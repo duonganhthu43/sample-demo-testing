@@ -226,6 +226,7 @@ Get detailed information about a specific LLM call:
 - User content is structured array format (optimization check)
 - Tool definitions are passed correctly
 - Response contains expected tool calls or content
+- `response_format` contains JSON schema (for structured output calls)
 
 ## Verification Checklist
 
@@ -244,7 +245,34 @@ Check that user messages use array format instead of string concatenation:
 }
 ```
 
-### 2. Image Handling
+### 2. Structured Outputs (JSON Schema)
+
+Verify that agents using structured outputs include `response_format` in their LLM calls:
+
+```json
+{
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "itinerary",
+      "schema": {...},
+      "strict": true
+    }
+  }
+}
+```
+
+**Agents using structured outputs:**
+- `itinerary_agent` → `ITINERARY_SCHEMA`
+- `research_agent` (destination) → `DESTINATION_EXTRACTION_SCHEMA`
+- `weather_service` → `WEATHER_FORECAST_SCHEMA`
+
+**How to verify:**
+1. Use `get_llm_call` with `include.llm_payload: true`
+2. Check the request contains `response_format` with `type: "json_schema"`
+3. Verify response is valid JSON matching the schema
+
+### 3. Image Handling
 
 After running demo, check console output for:
 
@@ -254,7 +282,7 @@ Replaced M image placeholders with actual images
 Warning: X placeholders not matched: [...]
 ```
 
-### 3. Tool Call Flow
+### 4. Tool Call Flow
 
 Expected tool call sequence:
 1. `research_destination` - First call
@@ -266,7 +294,7 @@ Expected tool call sequence:
 7. `generate_summary` - Trip summary
 8. `format_presentation` - Final markdown
 
-### 4. Context Accumulation
+### 5. Context Accumulation
 
 Verify that later agents receive context from earlier tools:
 - `analyze_cost_breakdown` should see flight/hotel/activity prices
@@ -296,6 +324,15 @@ curl http://localhost:9090/health
 # Check MCP server
 curl http://localhost:3000/api/health
 ```
+
+### Structured Output Schema Error
+
+If you see errors like:
+```
+Invalid schema for response_format 'itinerary': Missing 'field_name' in required array
+```
+
+This means a property in the schema is not listed in the `required` array. OpenAI's strict mode requires ALL properties to be in `required`. Fix by updating `src/utils/schemas.py`.
 
 ### Image Placeholders Not Matching
 
@@ -341,5 +378,6 @@ Typical demo execution:
 ## Related Documentation
 
 - [README.md](../README.md) - Project overview
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - System architecture
+- [ARCHITECTURE.md](./ARCHITECTURE.md) - System architecture (includes Structured Outputs section)
+- [schemas.py](../src/utils/schemas.py) - JSON schemas for structured outputs
 - vLLora docs at http://localhost:3000/docs

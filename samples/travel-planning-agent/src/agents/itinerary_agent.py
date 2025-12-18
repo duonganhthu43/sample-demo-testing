@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
 
 from ..utils.config import get_config
+from ..utils.schemas import get_response_format, ITINERARY_SCHEMA
 
 
 @dataclass
@@ -321,7 +322,7 @@ class ItineraryAgent:
                         "content": user_content  # Array of {"type": "text", "text": ...}
                     }
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("itinerary", ITINERARY_SCHEMA),
                 temperature=0.3,
                 max_tokens=4000
             )

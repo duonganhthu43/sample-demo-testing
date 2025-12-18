@@ -10,6 +10,7 @@ import json
 from datetime import datetime, timedelta
 
 from ..utils.config import get_config
+from ..utils.schemas import get_response_format, WEATHER_FORECAST_SCHEMA
 
 
 @dataclass
@@ -235,7 +236,7 @@ Rules:
                         "content": user_content,  # Array of {"type": "text", "text": ...}
                     },
                 ],
-                response_format={"type": "json_object"},
+                response_format=get_response_format("weather_forecast", WEATHER_FORECAST_SCHEMA),
                 temperature=0.2,
                 max_tokens=1500,
             )

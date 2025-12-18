@@ -232,8 +232,8 @@ class ActivitySearchTool:
         if not title or not content:
             return None
 
-        # Extract activity name from title
-        name = self._extract_activity_name(title)
+        # Extract activity name from title and content
+        name = self._extract_activity_name(title, content)
         if not name or len(name) < 5:
             return None
 
@@ -261,18 +261,30 @@ class ActivitySearchTool:
             source_url=url
         )
 
-    def _extract_activity_name(self, title: str) -> str:
-        """Extract a clean activity name from title"""
+    def _extract_activity_name(self, title: str, content: str = "") -> str:
+        """
+        Extract a clean activity name from title and content.
+        Uses dynamic extraction without hardcoded attraction names.
+        """
+        # First, try to extract proper noun phrases from content
+        # Look for patterns like "Visit X", "See X", "The X", capitalized names
+        name_candidates = self._extract_proper_nouns(title, content)
+        if name_candidates:
+            return name_candidates[0]
+
+        # Fall back to cleaning the title
         name = title
 
         # Remove common patterns
         patterns_to_remove = [
-            r'\s*-\s*[^-]{20,}$',  # Long suffix after dash
-            r'\s*\|.*$',
-            r'\(\d{4}\)',
-            r'^\d+\.\s*',
-            r'^best\s+',
-            r'^top\s+\d+\s+',
+            r'\s*-\s*[^-]{20,}$',  # Long suffix after dash (e.g., "- TripAdvisor Reviews")
+            r'\s*\|.*$',           # Pipe suffixes
+            r'\(\d{4}\)',          # Years in parentheses
+            r'^\d+\.\s*',          # Numbered list prefix
+            r'^best\s+',           # "Best X"
+            r'^top\s+\d+\s+',      # "Top 10 X"
+            r'^\d+\s+must[\s-]?see\s+', # "50 must-see X"
+            r'\s+\d{4}$',          # Year suffix
         ]
 
         for pattern in patterns_to_remove:
@@ -280,12 +292,52 @@ class ActivitySearchTool:
 
         name = name.strip()
 
-        # Skip generic titles
-        generic = ['things to do', 'travel guide', 'tourism', 'tripadvisor', 'booking.com']
-        if any(g in name.lower() for g in generic) and len(name) < 40:
+        # Skip generic titles that don't contain specific place names
+        generic_patterns = [
+            'things to do', 'travel guide', 'tourism', 'tripadvisor',
+            'booking.com', 'tourist attractions', 'travel tips'
+        ]
+        if any(g in name.lower() for g in generic_patterns) and len(name) < 40:
             return ""
 
         return name[:80]
+
+    def _extract_proper_nouns(self, title: str, content: str) -> List[str]:
+        """
+        Extract proper noun phrases (likely attraction names) from text.
+        Looks for capitalized multi-word phrases that appear to be place names.
+        """
+        candidates = []
+        combined = f"{title}. {content}"
+
+        # Pattern 1: Capitalized phrases (2-5 words, likely proper nouns)
+        # e.g., "Senso-ji Temple", "Tokyo National Museum"
+        proper_noun_pattern = r'(?:the\s+)?([A-Z][a-z]+(?:[-\s][A-Z]?[a-z]+){0,4}(?:\s+(?:Temple|Shrine|Museum|Palace|Park|Tower|Castle|Market|District|Garden|Bridge|Station))?)'
+        matches = re.findall(proper_noun_pattern, combined)
+        for match in matches:
+            clean = match.strip()
+            # Filter out generic words and short matches
+            if len(clean) > 5 and not any(g in clean.lower() for g in ['best', 'top', 'must', 'guide', 'review', 'tourist']):
+                candidates.append(clean)
+
+        # Pattern 2: Names with Japanese/foreign suffixes
+        # e.g., "-ji", "-dera", "-jinja", "-koen"
+        suffix_pattern = r'([A-Z][a-z]+(?:-[a-z]+)?(?:\s+[A-Z][a-z]+)*)'
+        for match in re.findall(suffix_pattern, combined):
+            if any(s in match.lower() for s in ['-ji', '-dera', '-jinja', '-koen', '-en', '-cho']):
+                if match not in candidates:
+                    candidates.append(match)
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique = []
+        for c in candidates:
+            c_lower = c.lower()
+            if c_lower not in seen:
+                seen.add(c_lower)
+                unique.append(c)
+
+        return unique[:3]  # Return top 3 candidates
 
     def _classify_category(self, text: str) -> str:
         """Classify activity category based on text content"""

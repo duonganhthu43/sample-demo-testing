@@ -24,6 +24,7 @@ class TravelPlanResult:
     iterations: int
     tool_calls_made: List[Dict[str, Any]]
     final_context: Dict[str, Any]
+    thread_id: Optional[str] = None  # vLLora thread ID for tracing
     itinerary: Optional[Dict[str, Any]] = None
     summary: Optional[Dict[str, Any]] = None
     presentation: Optional[Dict[str, Any]] = None  # Final formatted markdown
@@ -37,6 +38,7 @@ class TravelPlanResult:
             "iterations": self.iterations,
             "tool_calls_made": self.tool_calls_made,
             "final_context": self.final_context,
+            "thread_id": self.thread_id,
             "itinerary": self.itinerary,
             "summary": self.summary,
             "presentation": self.presentation
@@ -210,6 +212,7 @@ class TravelPlanningOrchestrator:
             iterations=iteration,
             tool_calls_made=self.tool_calls_made,
             final_context=final_context,
+            thread_id=thread_id,
             itinerary=final_context.get("itinerary"),
             summary=None,
             presentation=final_context.get("presentation")
