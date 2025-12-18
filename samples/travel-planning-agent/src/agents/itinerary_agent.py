@@ -222,13 +222,13 @@ class ItineraryAgent:
                 })
 
             elif item_type == "restaurants":
-                research_data["restaurants"] = {
+                research_data["restaurants"] = self._strip_base64_from_data({
                     "breakfast_options": item.get("breakfast_options", [])[:5],
                     "lunch_options": item.get("lunch_options", [])[:8],
                     "dinner_options": item.get("dinner_options", [])[:8],
                     "budget_friendly": item.get("budget_friendly", [])[:5],
                     "by_area": item.get("by_area", {})
-                }
+                })
 
         if research_data:
             content_parts.append({

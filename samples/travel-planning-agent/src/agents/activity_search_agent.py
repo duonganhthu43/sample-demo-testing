@@ -168,7 +168,7 @@ Search for things to do, attractions, experiences, and activities."""
 
     def _call_llm(self) -> Any:
         try:
-            client = self.config.get_llm_client(label="activity_search_agent")
+            client = self.config.get_llm_client(label="activity_search")
             return client.chat.completions.create(
                 model=self.config.llm.model,
                 messages=self.messages,

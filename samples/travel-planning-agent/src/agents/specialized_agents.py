@@ -273,7 +273,7 @@ class BudgetAgent:
         print(f"Optimizing budget with LLM (limit: ${budget_limit})")
 
         # Get LLM client
-        client = self.config.get_llm_client(label="budget_agent")
+        client = self.config.get_llm_client(label="budget_optimizer")
 
         try:
             # Build structured user content for better LLM understanding
@@ -453,7 +453,7 @@ class WeatherAgent:
         # Build structured content array for better LLM understanding
         user_content = self._build_weather_content(destination, forecast, num_days)
 
-        client = self.config.get_llm_client(label="weather_agent")
+        client = self.config.get_llm_client(label="weather_analyzer")
 
         try:
             response = client.chat.completions.create(
@@ -651,7 +651,7 @@ class SafetyAgent:
     def _extract_with_llm(self, destination: str, content_list: List[str]) -> Dict[str, Any]:
         """Use LLM to extract structured safety info"""
         try:
-            client = self.config.get_llm_client(label="safety_agent")
+            client = self.config.get_llm_client(label="safety_extractor")
 
             # Build structured user content for better LLM understanding
             user_content = self._build_safety_content(destination, content_list)
