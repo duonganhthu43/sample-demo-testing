@@ -290,7 +290,7 @@ FLIGHT_SEARCH_SCHEMA = {
                 "properties": {
                     "airline": {
                         "type": "string",
-                        "description": "Airline name (e.g., 'Singapore Airlines', 'ANA', 'Delta')"
+                        "description": "Airline name - MUST be a real airline name (e.g., 'Singapore Airlines', 'ANA', 'Delta', 'United', 'Scoot', 'JAL'). NEVER use 'TBD' or 'Unknown'. If not explicitly stated, infer the most likely airline based on the route and price."
                     },
                     "flight_number": {
                         "type": "string",

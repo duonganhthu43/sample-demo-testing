@@ -310,9 +310,15 @@ class PresentationAgent:
         content_parts = []
 
         # Part 1: Trip details as JSON
+        # Get travel_dates from itinerary, context, or constraints as fallback
+        travel_dates = itinerary.get("travel_dates") or ""
+        if not travel_dates:
+            travel_dates = context.get("travel_dates") or ""
+        if not travel_dates:
+            travel_dates = context.get("constraints", {}).get("travel_dates", "")
         trip_details = {
             "destination": itinerary.get("destination", "Unknown"),
-            "travel_dates": itinerary.get("travel_dates", "TBD"),
+            "travel_dates": travel_dates if travel_dates else "TBD",
             "total_estimated_cost": itinerary.get("total_estimated_cost", 0),
             "currency": itinerary.get("currency", "USD"),
             "num_days": len(itinerary.get("days", []))
@@ -532,20 +538,192 @@ class PresentationAgent:
                 # Generate image placeholder from activity name
                 activity_name = item.get("activity", "")
                 if activity_name:
-                    # Convert to lowercase snake_case
-                    key = re.sub(r'[^a-z0-9\s]', '', activity_name.lower())
-                    key = re.sub(r'\s+', '_', key.strip())
-                    # Remove common prefixes
-                    for prefix in ['visit_', 'explore_', 'lunch_at_', 'dinner_at_', 'breakfast_at_']:
-                        if key.startswith(prefix):
-                            key = key[len(prefix):]
-                            break
+                    # Extract venue/attraction name from activity description
+                    key = self._extract_venue_name(activity_name)
                     if key:
                         item["image_suggestion"] = key
 
             processed_days.append(processed_day)
 
         return processed_days
+
+    # Class-level cache for LLM venue extractions to avoid redundant API calls
+    _venue_extraction_cache: Dict[str, str] = {}
+
+    def _extract_venue_name(self, activity: str) -> str:
+        """
+        Hybrid venue extraction: regex first, LLM fallback for complex cases.
+        Works for any destination worldwide.
+
+        Examples:
+        - "Watch a Kabuki performance at Kabukiza Theater" → "kabukiza_theater"
+        - "Visit the Eiffel Tower" → "eiffel_tower"
+        - "Lunch at Bistro du Nord" → "bistro_du_nord"
+        """
+        # Try regex-based extraction first
+        venue_key = self._extract_venue_regex(activity)
+
+        # Check if result needs LLM fallback
+        # Fallback conditions: key too long (>40 chars), too generic, or contains action words
+        needs_llm = False
+        if venue_key:
+            # Too long suggests we couldn't extract a clean venue name
+            if len(venue_key) > 40:
+                needs_llm = True
+            # Contains action words that shouldn't be in a venue name
+            action_words = ['watch', 'take', 'enjoy', 'try', 'have', 'experience', 'class', 'performance', 'show']
+            if any(word in venue_key for word in action_words):
+                needs_llm = True
+        else:
+            needs_llm = True
+
+        # Use LLM fallback if needed
+        if needs_llm:
+            llm_venue = self._extract_venue_llm(activity)
+            if llm_venue:
+                return llm_venue
+
+        return venue_key
+
+    def _extract_venue_regex(self, activity: str) -> str:
+        """
+        Regex-based venue extraction. Fast and deterministic.
+        """
+        import re
+
+        activity_lower = activity.lower()
+
+        # Pattern 1: "X at Y" - extract Y (the venue after "at")
+        at_match = re.search(r'\bat\s+(.+)$', activity, re.IGNORECASE)
+        if at_match:
+            venue = at_match.group(1).strip()
+            venue = re.sub(r'\s*\([^)]*\)\s*$', '', venue)  # Remove parenthetical
+            venue = re.sub(r'\s*[-–]\s+.+$', '', venue)  # Remove dash suffix
+            if venue and len(venue) > 3:
+                return self._normalize_placeholder_key(venue)
+
+        # Pattern 2: "X in/around Y" - extract Y for location-based activities
+        location_match = re.search(r'\b(?:in|around)\s+([A-Z][a-zA-Z\s\']+)$', activity)
+        if location_match:
+            venue = location_match.group(1).strip()
+            if venue and len(venue) > 3:
+                return self._normalize_placeholder_key(venue)
+
+        # Pattern 3: "Visit/Explore/See [the] X" - extract X (after action verb)
+        action_match = re.search(
+            r'^(?:visit|explore|see|tour|experience|discover|walk\s+(?:through|around)|stroll\s+(?:through|around))\s+(?:the\s+)?(.+)$',
+            activity,
+            re.IGNORECASE
+        )
+        if action_match:
+            venue = action_match.group(1).strip()
+            venue = re.sub(r'\s+(?:in the|during|for|and|with)\s+.+$', '', venue, flags=re.IGNORECASE)
+            if venue and len(venue) > 3:
+                return self._normalize_placeholder_key(venue)
+
+        # Pattern 4: Meal patterns - "Breakfast/Lunch/Dinner at X"
+        meal_match = re.search(
+            r'^(?:breakfast|lunch|dinner|brunch|meal)\s+at\s+(.+)$',
+            activity,
+            re.IGNORECASE
+        )
+        if meal_match:
+            venue = meal_match.group(1).strip()
+            if venue and len(venue) > 3:
+                return self._normalize_placeholder_key(venue)
+
+        # Pattern 5: Look for proper nouns with landmark suffixes (universal)
+        landmark_suffixes = (
+            'Temple|Shrine|Museum|Palace|Park|Tower|Castle|Market|Garden|'
+            'Theater|Theatre|Station|District|Crossing|Bridge|Square|Plaza|'
+            'Cathedral|Church|Basilica|Mosque|Monument|Memorial|Gallery|'
+            'Beach|Island|Mountain|Lake|River|Falls|House|Hall|Center|Centre|'
+            'Stadium|Arena|Zoo|Aquarium|Pier|Harbor|Harbour|Bay|Fort|Fortress|'
+            'Abbey|Chapel|Library|University|Campus|Airport|Terminal|Port'
+        )
+        landmark_match = re.search(
+            rf'([A-Z][a-zA-Z\'\-]+(?:\s+[A-Z]?[a-zA-Z\'\-]+)*)\s+({landmark_suffixes})',
+            activity
+        )
+        if landmark_match:
+            venue = f"{landmark_match.group(1)} {landmark_match.group(2)}"
+            return self._normalize_placeholder_key(venue)
+
+        # Pattern 6: "The X" pattern for famous landmarks
+        the_match = re.search(r'\bthe\s+([A-Z][a-zA-Z\'\-]+(?:\s+[A-Z]?[a-zA-Z\'\-]+)*)(?:\s|$|,)', activity)
+        if the_match:
+            venue = the_match.group(1).strip()
+            if venue and len(venue) > 3:
+                return self._normalize_placeholder_key(venue)
+
+        # Fallback: Use full activity name but strip common action verbs
+        key = re.sub(r'[^a-z0-9\s]', '', activity_lower)
+        key = re.sub(r'\s+', '_', key.strip())
+
+        prefixes_to_remove = [
+            'visit_the_', 'visit_', 'explore_the_', 'explore_', 'see_the_', 'see_',
+            'tour_the_', 'tour_', 'experience_the_', 'experience_', 'discover_the_', 'discover_',
+            'watch_a_', 'watch_the_', 'take_a_', 'enjoy_a_', 'try_a_', 'have_a_',
+            'lunch_at_', 'dinner_at_', 'breakfast_at_', 'brunch_at_', 'meal_at_',
+            'walk_through_the_', 'walk_through_', 'walk_around_the_', 'walk_around_',
+            'stroll_through_the_', 'stroll_through_', 'stroll_around_'
+        ]
+        for prefix in prefixes_to_remove:
+            if key.startswith(prefix):
+                key = key[len(prefix):]
+                break
+
+        return key if key else ""
+
+    def _extract_venue_llm(self, activity: str) -> Optional[str]:
+        """
+        LLM-based venue extraction for complex cases.
+        Uses caching to avoid redundant API calls.
+        """
+        # Check cache first
+        if activity in PresentationAgent._venue_extraction_cache:
+            return PresentationAgent._venue_extraction_cache[activity]
+
+        try:
+            client = self.config.get_llm_client(label="venue_extraction")
+
+            prompt = f"""Extract the venue/location name from this activity description.
+Return ONLY the venue name, nothing else. If no clear venue, return "unknown".
+
+Activity: "{activity}"
+
+Examples:
+- "Watch a Kabuki performance at Kabukiza Theater" → Kabukiza Theater
+- "Take a sushi making class at Tokyo Cooking Studio" → Tokyo Cooking Studio
+- "Enjoy traditional tea ceremony" → Tea Ceremony (use the activity itself)
+- "Free time for shopping" → unknown
+
+Venue name:"""
+
+            response = client.chat.completions.create(
+                model=self.config.llm.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=50
+            )
+
+            venue = response.choices[0].message.content.strip()
+
+            # Clean up response
+            if venue.lower() in ['unknown', 'none', 'n/a', '']:
+                result = None
+            else:
+                # Remove quotes if LLM added them
+                venue = venue.strip('"\'')
+                result = self._normalize_placeholder_key(venue)
+
+            # Cache the result
+            PresentationAgent._venue_extraction_cache[activity] = result
+            return result
+
+        except Exception as e:
+            print(f"  LLM venue extraction failed: {str(e)}")
+            return None
 
     def _get_from_research(self, context: Dict, type_name: str) -> Dict:
         """Get item from research by type"""
@@ -902,11 +1080,13 @@ class PresentationAgent:
         """
         Replace IMAGE_PLACEHOLDER:key patterns with actual base64 data.
         Uses multiple matching strategies and falls back to category-based images.
+        IMPORTANT: Prevents duplicate images - each base64 image can only be used once.
         """
         import re
 
         matched_count = 0
         unmatched_keys = []
+        used_images = set()  # Track base64 images already used (by first 100 chars)
 
         # Pre-compute word sets for registry keys (for faster matching)
         registry_word_sets = {}
@@ -918,6 +1098,20 @@ class PresentationAgent:
         # Build category-based fallback images
         fallback_images = self._build_category_fallbacks(registry)
 
+        def get_image_hash(base64_data: str) -> str:
+            """Get a hash of the image for deduplication (first 100 chars is enough)"""
+            return base64_data[:100] if base64_data else ""
+
+        def try_use_image(base64_data: str, placeholder_key: str) -> Optional[str]:
+            """Try to use an image, returns None if already used"""
+            nonlocal matched_count
+            img_hash = get_image_hash(base64_data)
+            if img_hash in used_images:
+                return None  # Image already used elsewhere
+            used_images.add(img_hash)
+            matched_count += 1
+            return base64_data
+
         def replace_match(match):
             nonlocal matched_count, unmatched_keys
             raw_key = match.group(1)
@@ -925,14 +1119,16 @@ class PresentationAgent:
 
             # Strategy 1: Exact match
             if key in registry:
-                matched_count += 1
-                return registry[key]
+                result = try_use_image(registry[key], key)
+                if result:
+                    return result
 
             # Strategy 2: Normalized match
             normalized = self._normalize_placeholder_key(key)
             if normalized in registry:
-                matched_count += 1
-                return registry[normalized]
+                result = try_use_image(registry[normalized], normalized)
+                if result:
+                    return result
 
             # Strategy 3: Stripped match (remove all underscores/hyphens for comparison)
             # e.g., "sensojitemple" should match "sensoji_temple"
@@ -940,24 +1136,28 @@ class PresentationAgent:
             for reg_key, base64_data in registry.items():
                 stripped_reg = reg_key.replace('_', '').replace('-', '')
                 if stripped_key == stripped_reg:
-                    matched_count += 1
-                    return base64_data
+                    result = try_use_image(base64_data, reg_key)
+                    if result:
+                        return result
                 # Also check if one contains the other (for cases like "visitsensojitemple" vs "sensoji_temple")
                 if stripped_key in stripped_reg or stripped_reg in stripped_key:
-                    matched_count += 1
-                    return base64_data
+                    result = try_use_image(base64_data, reg_key)
+                    if result:
+                        return result
 
             # Strategy 4: Partial match (key contains registry key or vice versa)
             for reg_key, base64_data in registry.items():
                 if key in reg_key or reg_key in key:
-                    matched_count += 1
-                    return base64_data
+                    result = try_use_image(base64_data, reg_key)
+                    if result:
+                        return result
 
-            # Strategy 4: Word overlap matching with scoring
+            # Strategy 5: Word overlap matching with scoring
             key_words = set(normalized.split('_'))
             key_words = {w for w in key_words if len(w) > 2}  # Filter short words
 
             best_match = None
+            best_match_key = None
             best_score = 0
 
             for reg_key, base64_data in registry.items():
@@ -974,27 +1174,32 @@ class PresentationAgent:
                     if score > best_score:
                         best_score = score
                         best_match = base64_data
+                        best_match_key = reg_key
 
             # Require minimum score to accept match (at least one 4+ char word)
             if best_match and best_score >= 4:
-                matched_count += 1
-                return best_match
+                result = try_use_image(best_match, best_match_key)
+                if result:
+                    return result
 
-            # Strategy 5: Fuzzy single-word match for compound keys
+            # Strategy 6: Fuzzy single-word match for compound keys
             # e.g., "sensoji_temple" should match registry key "sensoji"
             for key_word in key_words:
                 if len(key_word) >= 4:  # Only match on significant words
                     for reg_key, base64_data in registry.items():
                         if key_word == reg_key or key_word in reg_key:
-                            matched_count += 1
-                            return base64_data
+                            result = try_use_image(base64_data, reg_key)
+                            if result:
+                                return result
 
-            # Strategy 6: Category-based fallback
+            # Strategy 7: Category-based fallback (DISABLED to prevent duplicate images)
+            # Category fallbacks often lead to many activities showing the same image
             # If key looks like a hotel/restaurant/activity, use a related image
-            category = self._detect_category(raw_key)
-            if category and category in fallback_images:
-                matched_count += 1
-                return fallback_images[category]
+            # category = self._detect_category(raw_key)
+            # if category and category in fallback_images:
+            #     result = try_use_image(fallback_images[category], f"fallback_{category}")
+            #     if result:
+            #         return result
 
             # No match found - create a placeholder SVG
             unmatched_keys.append(raw_key)

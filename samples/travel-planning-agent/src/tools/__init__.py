@@ -7,7 +7,7 @@ from ..agents.hotel_search_agent import HotelSearchTool
 from ..agents.activity_search_agent import ActivitySearchTool
 from ..agents.restaurant_search_agent import RestaurantSearchTool
 from .weather_service import WeatherService
-from .image_utils import download_and_encode_base64, create_placeholder_svg, ImageCache
+from .image_utils import download_and_encode_base64, create_placeholder_svg, ImageCache, clear_used_images
 from .image_search import ImageSearchTool
 
 __all__ = [
@@ -19,5 +19,6 @@ __all__ = [
     "download_and_encode_base64",
     "create_placeholder_svg",
     "ImageCache",
-    "ImageSearchTool"
+    "ImageSearchTool",
+    "clear_used_images"
 ]

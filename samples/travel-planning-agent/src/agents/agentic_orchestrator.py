@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ..utils.config import get_config
 from ..utils.prompts import ORCHESTRATOR_SYSTEM_PROMPT
 from .tools import get_tool_definitions, ToolExecutor
+from ..tools.image_utils import clear_used_images
 
 
 @dataclass
@@ -74,6 +75,9 @@ class TravelPlanningOrchestrator:
             TravelPlanResult with complete trip plan
         """
         start_time = time.time()
+
+        # Clear image deduplication tracker for new session
+        clear_used_images()
 
         # Generate unique IDs for tracing
         thread_id, run_id = self.config.generate_ids()

@@ -142,9 +142,14 @@ class ItineraryAgent:
                 f"estimated cost ≈ ${normalized['total_estimated_cost']:.2f})."
             )
 
+            # Get travel_dates from context or constraints
+            result_travel_dates = context.get("travel_dates") or ""
+            if not result_travel_dates:
+                result_travel_dates = context.get("constraints", {}).get("travel_dates", "")
+
             return ItineraryResult(
                 destination=context.get("destination", "Unknown"),
-                travel_dates=context.get("travel_dates", ""),
+                travel_dates=result_travel_dates,
                 days=normalized.get("days", []),
                 total_estimated_cost=normalized.get("total_estimated_cost", 0.0),
                 currency="USD",
@@ -171,9 +176,14 @@ class ItineraryAgent:
         content_parts = []
 
         # Part 1: Trip details as JSON
+        # Get travel_dates from context or from constraints as fallback
+        travel_dates = context.get("travel_dates") or ""
+        if not travel_dates:
+            constraints = context.get("constraints", {})
+            travel_dates = constraints.get("travel_dates", "")
         trip_details = {
             "destination": context.get("destination", "Unknown"),
-            "travel_dates": context.get("travel_dates", "TBD"),
+            "travel_dates": travel_dates if travel_dates else "TBD",
             "num_days": context.get("num_days", 5)
         }
         content_parts.append({

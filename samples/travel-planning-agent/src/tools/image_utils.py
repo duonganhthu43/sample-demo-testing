@@ -191,6 +191,37 @@ def get_image_from_urls(
 # Cache for item-specific image searches
 _item_image_cache: Dict[str, Optional[str]] = {}
 
+# Global set to track used image hashes - prevents same image from being used for different items
+_used_image_hashes: set = set()
+
+
+def get_image_hash(base64_data: str) -> str:
+    """Get a hash of the image for deduplication (first 100 chars of base64 is enough)"""
+    if not base64_data:
+        return ""
+    # Skip the data:image/jpeg;base64, prefix to get actual image data
+    if "base64," in base64_data:
+        base64_data = base64_data.split("base64,", 1)[1]
+    return base64_data[:100]
+
+
+def is_image_used(base64_data: str) -> bool:
+    """Check if this image has already been used for another item"""
+    img_hash = get_image_hash(base64_data)
+    return img_hash in _used_image_hashes
+
+
+def mark_image_used(base64_data: str) -> None:
+    """Mark an image as used so it won't be assigned to other items"""
+    img_hash = get_image_hash(base64_data)
+    if img_hash:
+        _used_image_hashes.add(img_hash)
+
+
+def clear_used_images() -> None:
+    """Clear the used images tracker (call at start of new planning session)"""
+    _used_image_hashes.clear()
+
 
 def search_images_parallel(
     items: list,
@@ -320,12 +351,17 @@ def search_image_for_item(
         # Get images from response
         images = response.get("images", [])
 
-        # Try each image URL until one works
+        # Try each image URL until one works (that hasn't been used already)
         for img in images:
             url = img if isinstance(img, str) else img.get("url", "")
             if url and _is_likely_photo(url):
                 base64_img = download_and_encode_base64(url, max_width, max_height)
                 if base64_img:
+                    # Check if this image was already used for another item
+                    if is_image_used(base64_img):
+                        print(f"    Skipping duplicate image for {item_name}")
+                        continue  # Try next image
+                    mark_image_used(base64_img)
                     _item_image_cache[cache_key] = base64_img
                     return base64_img
 
@@ -335,6 +371,11 @@ def search_image_for_item(
             if url:
                 base64_img = download_and_encode_base64(url, max_width, max_height)
                 if base64_img:
+                    # Check if this image was already used for another item
+                    if is_image_used(base64_img):
+                        print(f"    Skipping duplicate image for {item_name}")
+                        continue  # Try next image
+                    mark_image_used(base64_img)
                     _item_image_cache[cache_key] = base64_img
                     return base64_img
 

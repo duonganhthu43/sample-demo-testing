@@ -2,12 +2,12 @@
   "task": "Plan a 5-day trip to Tokyo in April",
   "constraints": {
     "budget": "under $1500 total",
-    "departure_city": "Singapore",
+    "departure_city": "VietNam",
     "travel_dates": "April 10-15",
     "preferences": [
       "avoid overnight flights",
       "hotel near public transport",
-      "no more than 2 activities per day"
+      "no more than 5 activities per day"
     ],
     "hard_constraints": [
       "must arrive before 6pm local time",
