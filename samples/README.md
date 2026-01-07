@@ -41,11 +41,42 @@ python examples/demo.py
 
 ---
 
-### 2. [Sample Placeholder]
+### 2. [Naive Research Agent (v1)](./simple-agent/)
 
-**Coming Soon**
+**Status:** ✅ Complete | **Complexity:** Beginner | **Version:** 1 of 4
 
-More agentic AI samples will be added here demonstrating different patterns and use cases.
+A baseline research agent - the first in a progressive demo series showing agent architecture evolution.
+
+**Key Features:**
+- 🔬 **Research Assistant**: Searches web, analyzes content, synthesizes answers
+- 🔄 **Agentic Loop**: Clear implementation of decide→execute→repeat pattern
+- 🌐 **Tavily Integration**: Real web search with mock fallback
+- 📊 **Baseline Design**: Single agent, sequential execution (intentionally simple)
+
+**The Evolution Series:**
+| Version | Focus | Key Improvement |
+|---------|-------|-----------------|
+| **v1** | Baseline | Single agent, sequential |
+| v2 | Prompting | Query decomposition, CoT |
+| v3 | Architecture | Specialized sub-agents |
+| v4 | Performance | Parallel execution |
+
+**What You'll Learn:**
+- The core agentic loop pattern
+- LLM function calling fundamentals
+- Why this baseline has limitations
+- Foundation for understanding improvements
+
+**Quick Start:**
+```bash
+cd simple-agent
+./setup.sh
+python examples/demo.py
+```
+
+**Documentation:**
+- [Quick Start Guide](./simple-agent/README.md)
+- [Architecture Overview](./simple-agent/docs/ARCHITECTURE.md)
 
 ---
 

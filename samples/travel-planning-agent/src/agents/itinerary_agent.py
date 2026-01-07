@@ -71,6 +71,23 @@ ITINERARY_SYSTEM_PROMPT = """You are a travel itinerary planning expert. Create 
 
 **VIOLATION CHECK**: If "Sushi Zanmai" appears on Day 1 dinner, it CANNOT appear on Day 2, Day 3, or any other day for ANY meal. Same for "Ichiran Ramen" or any other restaurant/attraction.
 
+## CRITICAL: SPECIFIC VENUES ONLY (NO GENERIC NAMES)
+
+**NEVER use generic terms like "Local Restaurant" or "Nearby Cafe"**
+- Every meal MUST have a SPECIFIC restaurant name from the research data
+- Include the FULL ADDRESS when available (e.g., "1-22-7 Jinnan, Shibuya, Tokyo")
+- If you run out of researched restaurants, use the same restaurant for a DIFFERENT meal type (e.g., a lunch spot for breakfast)
+- Format: "Breakfast at Tsuta Ramen (1-14-1 Sugamo, Toshima)" NOT "Breakfast at local restaurant"
+
+**Example - CORRECT:**
+- "Dinner at Ichiran Ramen Shibuya (1-22-7 Jinnan, Shibuya-ku, Tokyo)"
+- "Lunch at Afuri Ramen Ebisu (1-1-7 Ebisu, Shibuya-ku)"
+
+**Example - WRONG:**
+- "Dinner at local restaurant near hotel" ❌
+- "Lunch at nearby cafe" ❌
+- "Breakfast - find something nearby" ❌
+
 ## Key Guidelines
 
 1. **Use Research Data**: Use ONLY data from the provided research (activities, restaurants, flights, hotels)
@@ -83,7 +100,7 @@ ITINERARY_SYSTEM_PROMPT = """You are a travel itinerary planning expert. Create 
 3. **Detailed Descriptions** (see schema descriptions for format):
    - FLIGHTS: Airport arrival time, passport reminder, duration, transport from airport with costs
    - ATTRACTIONS: What to experience, opening hours, transport with costs
-   - MEALS: Use restaurant data - name, dishes, price per person, reservation/wait info
+   - MEALS: Use SPECIFIC restaurant data - exact name, full address, dishes, price per person, reservation/wait info
 
 4. **Cost Accuracy**:
    - Use actual prices from research data
@@ -512,14 +529,47 @@ class ItineraryAgent:
             # If unknown restaurant, check for raw location duplicates
             if canonical is None:
                 if raw_location and raw_location in all_seen_locations:
-                    # This unknown restaurant was already used - replace with generic
+                    # This unknown restaurant was already used - replace with a specific one
                     item = days[day_idx]["schedule"][item_idx]
-                    day_num = days[day_idx].get("day", day_idx + 1)
-                    item["activity"] = f"{meal_type.capitalize()} - Local restaurant near Day {day_num} area"
-                    # Clear old image suggestion so presentation layer regenerates it
-                    item.pop("image_suggestion", None)
-                    item.pop("image_placeholder", None)
-                    print(f"    Replaced unknown duplicate '{raw_location}' with generic")
+                    # Find an unused restaurant from research data
+                    replacement_found = False
+                    for name, data in restaurant_map.items():
+                        if name not in used_restaurants and name not in all_seen_locations:
+                            address = data.get("address", "") or data.get("area", "")
+                            if address:
+                                item["activity"] = f"{meal_type.capitalize()} at {data['name']} ({address})"
+                            else:
+                                item["activity"] = f"{meal_type.capitalize()} at {data['name']}"
+                            if address:
+                                item["location"] = address
+                            # Generate image suggestion
+                            import re
+                            restaurant_key = re.sub(r'[^a-z0-9\s]', '', data['name'].lower())
+                            restaurant_key = re.sub(r'\s+', '_', restaurant_key.strip())
+                            item["image_suggestion"] = restaurant_key
+                            item.pop("image_placeholder", None)
+                            used_restaurants.add(name)
+                            all_seen_locations.add(name)
+                            replacement_found = True
+                            print(f"    Replaced unknown duplicate '{raw_location}' with '{data['name']}'")
+                            break
+                    if not replacement_found:
+                        # Fallback: reuse a known restaurant
+                        if available_restaurants:
+                            fallback = available_restaurants[day_idx % len(available_restaurants)]
+                            address = fallback.get("address", "") or fallback.get("area", "")
+                            if address:
+                                item["activity"] = f"{meal_type.capitalize()} at {fallback['name']} ({address})"
+                            else:
+                                item["activity"] = f"{meal_type.capitalize()} at {fallback['name']}"
+                            if address:
+                                item["location"] = address
+                            import re
+                            restaurant_key = re.sub(r'[^a-z0-9\s]', '', fallback['name'].lower())
+                            restaurant_key = re.sub(r'\s+', '_', restaurant_key.strip())
+                            item["image_suggestion"] = restaurant_key
+                            item.pop("image_placeholder", None)
+                            print(f"    Replaced unknown duplicate '{raw_location}' with '{fallback['name']}' (reused)")
                     duplicates_fixed += 1
                 else:
                     all_seen_locations.add(raw_location)
@@ -540,23 +590,51 @@ class ItineraryAgent:
 
                 item = days[day_idx]["schedule"][item_idx]
                 if replacement:
-                    new_activity = f"{meal_type.capitalize()} at {replacement['name']}"
+                    # Build activity with address if available
+                    address = replacement.get("address", "") or replacement.get("area", "")
+                    if address:
+                        new_activity = f"{meal_type.capitalize()} at {replacement['name']} ({address})"
+                    else:
+                        new_activity = f"{meal_type.capitalize()} at {replacement['name']}"
                     item["activity"] = new_activity
-                    # Clear old image suggestion so presentation layer regenerates it
-                    item.pop("image_suggestion", None)
+                    # Update location with address
+                    if address:
+                        item["location"] = address
+                    # Generate proper image suggestion from restaurant name
+                    import re
+                    restaurant_key = re.sub(r'[^a-z0-9\s]', '', replacement['name'].lower())
+                    restaurant_key = re.sub(r'\s+', '_', restaurant_key.strip())
+                    item["image_suggestion"] = restaurant_key
                     item.pop("image_placeholder", None)
                     if replacement.get("cuisine_type"):
                         old_notes = item.get("notes", "")
                         item["notes"] = f"{replacement['cuisine_type']} cuisine. {old_notes}".strip()
                     print(f"    Replaced duplicate '{canonical}' with '{replacement['name']}'")
                 else:
-                    # No unused restaurant available - use a generic description
-                    day_num = days[day_idx].get("day", day_idx + 1)
-                    item["activity"] = f"{meal_type.capitalize()} - Local restaurant near Day {day_num} area"
-                    # Clear old image suggestion
-                    item.pop("image_suggestion", None)
-                    item.pop("image_placeholder", None)
-                    print(f"    Replaced duplicate '{canonical}' with generic (no alternatives)")
+                    # No unused restaurant available - reuse a restaurant from different meal type
+                    # Pick a random restaurant and use it (better than generic)
+                    if available_restaurants:
+                        fallback = available_restaurants[day_idx % len(available_restaurants)]
+                        address = fallback.get("address", "") or fallback.get("area", "")
+                        if address:
+                            item["activity"] = f"{meal_type.capitalize()} at {fallback['name']} ({address})"
+                        else:
+                            item["activity"] = f"{meal_type.capitalize()} at {fallback['name']}"
+                        if address:
+                            item["location"] = address
+                        # Generate image suggestion
+                        import re
+                        restaurant_key = re.sub(r'[^a-z0-9\s]', '', fallback['name'].lower())
+                        restaurant_key = re.sub(r'\s+', '_', restaurant_key.strip())
+                        item["image_suggestion"] = restaurant_key
+                        item.pop("image_placeholder", None)
+                        print(f"    Replaced duplicate '{canonical}' with '{fallback['name']}' (reused)")
+                    else:
+                        # Absolute last resort - this shouldn't happen with proper research
+                        item["activity"] = f"{meal_type.capitalize()} at recommended local venue"
+                        item.pop("image_suggestion", None)
+                        item.pop("image_placeholder", None)
+                        print(f"    Warning: No restaurant data for fallback")
                 duplicates_fixed += 1
             else:
                 # First occurrence - mark as used

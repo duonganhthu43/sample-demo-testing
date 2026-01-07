@@ -70,7 +70,7 @@ TOOL_DEFINITIONS = [
             }
         }
     },
-    # ... 12 more tools
+    # ... 15 more tools (16 total)
 ]
 ```
 
@@ -166,31 +166,32 @@ flights = context["research"][1]        # Full flight data with all details
    ├─ Extract destination, dates, budget from input
    └─ Set initial context
 
-3. Agentic Loop
+3. Agentic Loop (typical execution)
    │
-   ├─ Iteration 1: LLM calls research_destination
+   ├─ Iteration 1: research_destination
    │   └─ Result: destination info, visa, culture tips
    │
-   ├─ Iteration 2: LLM calls research_flights, research_accommodations
-   │   └─ Results: flight options, hotel options (parallel)
+   ├─ Iteration 2: research_flights + research_accommodations +
+   │               research_activities + research_restaurants (PARALLEL)
+   │   └─ Results: flights, hotels, activities, restaurants with images
    │
-   ├─ Iteration 3: LLM calls research_activities
-   │   └─ Result: attractions, activities list
+   ├─ Iteration 3: analyze_* tools (PARALLEL)
+   │   └─ Results: feasibility, cost, schedule, weather, safety, transport
    │
-   ├─ Iteration 4: LLM calls analyze_weather, analyze_safety
-   │   └─ Results: forecast, safety tips (parallel)
+   ├─ Iteration 4: generate_itinerary
+   │   └─ Result: day-by-day itinerary with image_suggestion fields
    │
-   ├─ Iteration 5: LLM calls analyze_cost_breakdown
-   │   └─ Result: budget analysis
+   ├─ Iteration 5: fetch_images
+   │   └─ Result: targeted images for itinerary items (via ImageAgent)
    │
-   ├─ Iteration 6: LLM calls generate_itinerary
-   │   └─ Result: day-by-day itinerary
+   ├─ Iteration 6: format_presentation
+   │   └─ Result: beautiful markdown with embedded images
    │
-   └─ Iteration 7: LLM stops (no more tool calls)
+   └─ Iteration 7+: LLM stops (no more tool calls) or generate_summary
 
 4. Result Assembly
    │
-   └─ TravelPlanResult with itinerary, costs, all context
+   └─ TravelPlanResult with itinerary, presentation, costs, all context
 ```
 
 ## Agent Design Pattern
@@ -257,18 +258,43 @@ This allows the demo to work without any real API keys.
 
 ## Key Files
 
+### Core Orchestration
 | File | Purpose |
 |------|---------|
-| `src/agents/agentic_orchestrator.py` | Main LLM orchestrator |
-| `src/agents/tools.py` | Tool definitions (14 tools) + ToolExecutor |
-| `src/agents/research_agent.py` | Destination, flights, hotels, activities research |
+| `src/agents/agentic_orchestrator.py` | Main LLM orchestrator with function calling loop |
+| `src/agents/tools.py` | Tool definitions (16 tools) + ToolExecutor |
+
+### Research Agents
+| File | Purpose |
+|------|---------|
+| `src/agents/research_agent.py` | Destination research via Tavily + LLM extraction |
+| `src/agents/flight_search_agent.py` | LLM-powered flight search with Tavily |
+| `src/agents/hotel_search_agent.py` | LLM-powered hotel search with Tavily |
+| `src/agents/activity_search_agent.py` | LLM-powered activity/attraction search |
+| `src/agents/restaurant_search_agent.py` | LLM-powered restaurant search |
+
+### Analysis & Specialized Agents
+| File | Purpose |
+|------|---------|
 | `src/agents/analysis_agent.py` | Feasibility, cost, schedule analysis |
-| `src/agents/specialized_agents.py` | Budget, weather, safety, transport |
-| `src/agents/itinerary_agent.py` | Itinerary generation |
-| `src/agents/presentation_agent.py` | Markdown formatting for final output |
+| `src/agents/specialized_agents.py` | Budget, weather, safety, transport analysis |
+
+### Output Generation
+| File | Purpose |
+|------|---------|
+| `src/agents/itinerary_agent.py` | Day-by-day itinerary generation |
+| `src/agents/image_agent.py` | Targeted image fetching based on itinerary content |
+| `src/agents/presentation_agent.py` | Markdown formatting with image embedding |
+
+### Tools & Utilities
+| File | Purpose |
+|------|---------|
+| `src/tools/image_search.py` | ImageSearchTool using Tavily API for image discovery |
+| `src/tools/image_utils.py` | Image download, base64 encoding, caching, deduplication |
+| `src/tools/weather_service.py` | Weather data fetching |
 | `src/utils/config.py` | Configuration management |
 | `src/utils/prompts.py` | System prompts |
-| `src/utils/schemas.py` | JSON schemas for structured outputs |
+| `src/utils/schemas.py` | JSON schemas for structured outputs (10 schemas) |
 
 ## Tool Dependencies & Parallel Execution
 
@@ -282,32 +308,39 @@ Tools have data dependencies - some require results from others before they can 
                            │   (destination info)    │     (no dependencies)
                            └───────────┬─────────────┘
                                        │
-              ┌────────────────────────┼────────────────────────┐
-              │                        │                        │
-              ▼                        ▼                        ▼
-    ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-    │ research_flights│    │research_hotels  │    │research_activity│  ← CAN run
-    │   (flights)     │    │   (hotels)      │    │  (activities)   │    in PARALLEL
-    └────────┬────────┘    └────────┬────────┘    └────────┬────────┘
-             │                      │                      │
-             └──────────────────────┼──────────────────────┘
+     ┌─────────────────┬───────────────┼───────────────┬─────────────────┐
+     │                 │               │               │                 │
+     ▼                 ▼               ▼               ▼                 ▼
+┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
+│ research │    │ research │    │ research │    │ research │    │   CAN    │
+│ _flights │    │ _hotels  │    │_activity │    │_restaurants   │   run    │
+└────┬─────┘    └────┬─────┘    └────┬─────┘    └────┬─────┘    │ PARALLEL │
+     │               │               │               │          └──────────┘
+     └───────────────┴───────────────┴───────────────┘
                                     │
                                     ▼
     ┌───────────────────────────────────────────────────────────────┐
-    │         analyze_feasibility, analyze_cost, analyze_weather,   │  ← CAN run
-    │         analyze_safety, analyze_transport, optimize_budget    │    in PARALLEL
+    │  analyze_feasibility, analyze_cost, analyze_schedule,         │  ← CAN run
+    │  analyze_weather, analyze_safety, analyze_transport,          │    in PARALLEL
+    │  optimize_budget                                              │
     └───────────────────────────────┬───────────────────────────────┘
                                     │
                                     ▼
                         ┌───────────────────────┐
                         │  generate_itinerary   │  ← MUST run
                         │  (final itinerary)    │    (needs all data)
-                        └───────────────────────┘
+                        └───────────┬───────────┘
+                                    │
+                                    ▼
+                        ┌───────────────────────┐
+                        │    fetch_images       │  ← Fetches targeted
+                        │  (ImageAgent)         │    images for itinerary
+                        └───────────┬───────────┘
                                     │
                                     ▼
                         ┌───────────────────────┐
                         │  format_presentation  │  ← FINAL step
-                        │  (markdown output)    │    (formats everything)
+                        │  (markdown + images)  │    (embeds images)
                         └───────────────────────┘
 ```
 
@@ -316,18 +349,21 @@ Tools have data dependencies - some require results from others before they can 
 | Tool | Depends On | Can Parallel With |
 |------|------------|-------------------|
 | `research_destination` | None | - |
-| `research_flights` | destination | hotels, activities |
-| `research_accommodations` | destination | flights, activities |
-| `research_activities` | destination | flights, hotels |
-| `analyze_itinerary_feasibility` | flights, hotels, activities | cost, weather, safety, transport |
-| `analyze_cost_breakdown` | flights, hotels, activities | feasibility, weather, safety, transport |
-| `analyze_weather` | destination, dates | feasibility, cost, safety, transport |
-| `analyze_safety` | destination | feasibility, cost, weather, transport |
-| `analyze_local_transport` | destination | feasibility, cost, weather, safety |
+| `research_flights` | destination | hotels, activities, restaurants |
+| `research_accommodations` | destination | flights, activities, restaurants |
+| `research_activities` | destination | flights, hotels, restaurants |
+| `research_restaurants` | destination | flights, hotels, activities |
+| `analyze_itinerary_feasibility` | flights, hotels, activities | cost, schedule, weather, safety, transport |
+| `analyze_cost_breakdown` | flights, hotels, activities | feasibility, schedule, weather, safety, transport |
+| `analyze_schedule_optimization` | flights, hotels, activities | feasibility, cost, weather, safety, transport |
+| `analyze_weather` | destination, dates | feasibility, cost, schedule, safety, transport |
+| `analyze_safety` | destination | feasibility, cost, schedule, weather, transport |
+| `analyze_local_transport` | destination | feasibility, cost, schedule, weather, safety |
 | `optimize_budget` | flights, hotels, activities | - |
 | `generate_itinerary` | ALL research + analysis | - |
+| `fetch_images` | itinerary | - |
 | `generate_summary` | itinerary | - |
-| `format_presentation` | itinerary | - |
+| `format_presentation` | itinerary, images | - |
 
 ### Why Iterations Exist
 
@@ -341,19 +377,24 @@ The LLM orchestrator makes decisions in **iterations** (rounds) because:
 Iteration 1: research_destination
    └── Need basic destination info before anything else
 
-Iteration 2: research_flights + research_accommodations + research_activities
-   └── These 3 tools have NO dependencies on each other → RUN IN PARALLEL
-   └── All 3 need destination info from Iteration 1
+Iteration 2: research_flights + research_accommodations + research_activities + research_restaurants
+   └── These 4 tools have NO dependencies on each other → RUN IN PARALLEL
+   └── All 4 need destination info from Iteration 1
 
-Iteration 3: analyze_* tools (5 tools)
+Iteration 3: analyze_* tools (7 tools)
    └── All need research data from Iteration 2 → RUN IN PARALLEL
    └── No dependencies between analysis tools
 
 Iteration 4: generate_itinerary
    └── Needs ALL previous data to create final plan
 
-Iteration 5: format_presentation
-   └── Creates beautiful markdown output with tables, checklists, links
+Iteration 5: fetch_images
+   └── ImageAgent fetches targeted images based on itinerary content
+   └── Uses Tavily API with advanced search for diverse, unique images
+
+Iteration 6: format_presentation
+   └── Creates beautiful markdown output with embedded images
+   └── Uses 7-strategy fuzzy matching for placeholder-to-image mapping
 ```
 
 ### Parallel Execution
@@ -413,11 +454,16 @@ messages.append({"role": "tool", "content": "Found 8 flights ($180-$450), 3 dire
 
 | Agent | Uses LLM | Purpose |
 |-------|----------|---------|
-| `AgenticOrchestrator` | ✅ Yes | Main decision-making loop |
-| `ResearchAgent` | ✅ Yes | Tavily API + LLM for info extraction |
+| `AgenticOrchestrator` | ✅ Yes | Main decision-making loop with function calling |
+| `ResearchAgent` | ✅ Yes | Destination research via Tavily + LLM extraction |
+| `FlightSearchAgent` | ✅ Yes | Flight search via Tavily + LLM structuring |
+| `HotelSearchAgent` | ✅ Yes | Hotel search via Tavily + LLM structuring |
+| `ActivitySearchAgent` | ✅ Yes | Activity search via Tavily + LLM structuring |
+| `RestaurantSearchAgent` | ✅ Yes | Restaurant search via Tavily + LLM structuring |
 | `AnalysisAgent` | ✅ Yes | Intelligent feasibility, cost, schedule analysis |
 | `SpecializedAgents` | ✅ Yes | Tavily API + LLM for budget, weather, safety, transport |
 | `ItineraryAgent` | ✅ Yes | Generates intelligent day-by-day schedules |
+| `ImageAgent` | ❌ No | Uses Tavily API directly for image search |
 | `PresentationAgent` | ✅ Yes | Formats output as professional markdown |
 
 ### ResearchAgent
@@ -425,6 +471,22 @@ Uses Tavily API to search for destination information, then LLM to extract struc
 - Visa requirements, language, currency, timezone
 - Cultural tips and local cuisine
 - Safety ratings and best time to visit
+
+### Specialized Search Agents
+Each search agent follows a similar pattern: Tavily search → LLM extraction with structured outputs:
+
+| Agent | Tavily Queries | LLM Schema | Output |
+|-------|---------------|------------|--------|
+| `FlightSearchAgent` | Flight schedules, prices | `FLIGHT_SEARCH_SCHEMA` | Flight options with airlines, times, prices |
+| `HotelSearchAgent` | Hotels, accommodations | `HOTEL_SEARCH_SCHEMA` | Hotels with ratings, amenities, prices |
+| `ActivitySearchAgent` | Attractions, activities | `ACTIVITY_SEARCH_SCHEMA` | Activities with categories, durations, tips |
+| `RestaurantSearchAgent` | Restaurants, dining | `RESTAURANT_SEARCH_SCHEMA` | Restaurants with cuisine, price ranges |
+
+**Features:**
+- Parallel Tavily searches for comprehensive coverage
+- LLM-powered data extraction with JSON schema validation
+- Automatic image downloading for visual content
+- Caching to avoid duplicate API calls
 
 ### AnalysisAgent
 Uses LLM for intelligent analysis:
@@ -478,6 +540,13 @@ def get_response_format(schema_name: str, schema: Dict[str, Any]) -> Dict[str, A
 | `ITINERARY_SCHEMA` | ItineraryAgent | Day-by-day itinerary with schedule, costs, packing list |
 | `DESTINATION_EXTRACTION_SCHEMA` | ResearchAgent | Visa, language, currency, cultural tips, safety info |
 | `WEATHER_FORECAST_SCHEMA` | WeatherService | Daily forecasts, averages, packing suggestions |
+| `FLIGHT_SEARCH_SCHEMA` | FlightSearchAgent | Flight options with prices, airlines, schedules |
+| `HOTEL_SEARCH_SCHEMA` | HotelSearchAgent | Hotel options with ratings, amenities, locations |
+| `ACTIVITY_SEARCH_SCHEMA` | ActivitySearchAgent | Activities/attractions with categories, prices, tips |
+| `RESTAURANT_SEARCH_SCHEMA` | RestaurantSearchAgent | Restaurants with cuisine, price ranges, specialties |
+| `FEASIBILITY_ANALYSIS_SCHEMA` | AnalysisAgent | Feasibility scores, concerns, recommendations |
+| `COST_BREAKDOWN_SCHEMA` | AnalysisAgent | Itemized costs, daily averages, budget status |
+| `SCHEDULE_OPTIMIZATION_SCHEMA` | AnalysisAgent | Optimized schedule with conflict detection |
 
 ### Schema Requirements for Strict Mode
 
@@ -548,6 +617,12 @@ except Exception as e:
 
 ## Image Handling Architecture
 
+### Overview
+
+The travel planning agent uses a multi-stage image pipeline:
+1. **ImageAgent** - Fetches targeted images based on itinerary content
+2. **PresentationAgent** - Embeds images using placeholder matching
+
 ### Why Images Don't Appear in Traces
 
 The presentation agent embeds images into the final markdown output, but **images are NOT visible in the LLM traces**. This is **by design** for efficiency reasons.
@@ -592,30 +667,39 @@ Instead of asking the LLM to generate base64 data (impossible) or copy it from i
 │  COMPLETE IMAGE FLOW                                                         │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  Step 1: Collection (during research_activities)                            │
+│  Step 1: Research Collection (during research tools)                        │
 │  ┌────────────────────────────────────────────────────────────────────┐     │
-│  │ ActivitySearchTool.search() → Tavily API returns image URLs        │     │
-│  │ ActivitySearchTool._get_activity_images() → downloads & converts   │     │
-│  │ Returns: {"name": "Sensoji Temple", "images": ["base64..."]}       │     │
+│  │ HotelSearchAgent, ActivitySearchAgent, RestaurantSearchAgent       │     │
+│  │ Each downloads images via Tavily API for found items               │     │
+│  │ Images stored with items: {"name": "...", "images": ["base64..."]} │     │
 │  └────────────────────────────────────────────────────────────────────┘     │
 │                               │                                             │
 │                               ▼                                             │
-│  Step 2: Storage (in tool_executor.context)                                 │
+│  Step 2: Itinerary Generation                                               │
 │  ┌────────────────────────────────────────────────────────────────────┐     │
-│  │ context["research"]["activities"]["results"][0]["images"] = [...]  │     │
-│  │ Images stored as base64 strings in the activity data               │     │
+│  │ ItineraryAgent creates day-by-day plan with image_suggestion keys  │     │
+│  │ e.g., {"activity": "Visit Sensoji", "image_suggestion": "sensoji"} │     │
 │  └────────────────────────────────────────────────────────────────────┘     │
 │                               │                                             │
 │                               ▼                                             │
-│  Step 3: Registry Building (in PresentationAgent.format_presentation)      │
+│  Step 3: Targeted Image Fetching (ImageAgent via fetch_images tool)         │
 │  ┌────────────────────────────────────────────────────────────────────┐     │
-│  │ _build_image_registry() scans context for all images               │     │
-│  │ _add_image_aliases() creates multiple keys for fuzzy matching      │     │
-│  │ Returns: {"sensoji_temple": "base64...", "temple": "base64..."...} │     │
+│  │ ImageAgent analyzes itinerary to extract image requirements        │     │
+│  │ Fetches targeted images via Tavily API (advanced search, 5 results)│     │
+│  │ Deduplicates images using URL-based tracking (before downloading)  │     │
+│  │ Returns: {"sensoji_temple": "base64...", "hero": "base64..."...}   │     │
 │  └────────────────────────────────────────────────────────────────────┘     │
 │                               │                                             │
 │                               ▼                                             │
-│  Step 4: LLM Generation (TRACED in vLLora)                                  │
+│  Step 4: Registry Building (in PresentationAgent)                           │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │ Combines images from: ImageAgent results + research context        │     │
+│  │ Normalizes keys using normalize_image_key() for consistent matching│     │
+│  │ Creates stripped lookup table (no underscores) for fuzzy matching  │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│                               │                                             │
+│                               ▼                                             │
+│  Step 5: LLM Generation (TRACED in vLLora)                                  │
 │  ┌────────────────────────────────────────────────────────────────────┐     │
 │  │ LLM receives: registry keys as available_images list               │     │
 │  │ LLM generates: markdown with IMAGE_PLACEHOLDER:xxx patterns        │     │
@@ -623,16 +707,16 @@ Instead of asking the LLM to generate base64 data (impossible) or copy it from i
 │  └────────────────────────────────────────────────────────────────────┘     │
 │                               │                                             │
 │                               ▼                                             │
-│  Step 5: Post-Processing (NOT traced - Python code after LLM)               │
+│  Step 6: Post-Processing (NOT traced - Python code after LLM)               │
 │  ┌────────────────────────────────────────────────────────────────────┐     │
 │  │ _replace_image_placeholders() finds all IMAGE_PLACEHOLDER:xxx      │     │
-│  │ 5-strategy fuzzy matching: exact → normalized → partial → word     │     │
-│  │   overlap → single-word fallback                                   │     │
+│  │ 7-strategy fuzzy matching (see table below)                        │     │
 │  │ Replaces with: data:image/jpeg;base64,/9j/4AAQ...                  │     │
+│  │ Falls back to category-based images or SVG placeholders            │     │
 │  └────────────────────────────────────────────────────────────────────┘     │
 │                               │                                             │
 │                               ▼                                             │
-│  Step 6: Final Output (saved to file)                                       │
+│  Step 7: Final Output (saved to file)                                       │
 │  ┌────────────────────────────────────────────────────────────────────┐     │
 │  │ outputs/travel_plan_{thread_id}.md contains embedded images        │     │
 │  │ Can be opened in any markdown viewer to see actual images          │     │
@@ -643,15 +727,31 @@ Instead of asking the LLM to generate base64 data (impossible) or copy it from i
 
 ### Fuzzy Matching Strategies
 
-The placeholder-to-image matching uses 5 strategies (in order of priority):
+The placeholder-to-image matching uses 7 strategies (in order of priority):
 
 | Strategy | Example Match | Priority |
 |----------|---------------|----------|
 | Exact match | `sensoji_temple` → `sensoji_temple` | 1 (highest) |
 | Normalized match | `Sensoji Temple` → `sensoji_temple` | 2 |
-| Partial match | `sensoji` found in `sensoji_temple_tokyo` | 3 |
-| Word overlap scoring | `tokyo_temple` matches `sensoji_temple` (1 word overlap) | 4 |
-| Single-word fallback | `temple` → first key containing "temple" | 5 (lowest) |
+| Stripped match | `sensojitemple` → `sensoji_temple` (underscores removed) | 3 |
+| Contains match | `visitsensojitemple` → `sensoji_temple` | 3b |
+| Partial match | `sensoji` found in `sensoji_temple_tokyo` | 4 |
+| Word overlap scoring | `tokyo_temple` matches `sensoji_temple` (1+ word overlap) | 5 |
+| Single-word fallback | `temple` → first key containing "temple" | 6 |
+| Category fallback | Unmatched "restaurant" → any available restaurant image | 7 (lowest) |
+
+**Key Normalization:**
+```python
+# normalize_image_key() in image_utils.py
+"Sensoji Temple" → "sensoji_temple"
+"Ichiran Ramen (Shibuya)" → "ichiran_ramen_shibuya"
+```
+
+**Image Deduplication:**
+- Uses URL-based tracking at ImageSearchTool level
+- Checks URL before downloading (more efficient)
+- `_search_tavily()` returns list of URLs for fallback options
+- Prevents same image from appearing for different items
 
 ### Why This Design?
 
@@ -663,11 +763,45 @@ The placeholder-to-image matching uses 5 strategies (in order of priority):
 
 4. **Separation of Concerns**: LLM focuses on content creation; Python handles data embedding.
 
+### ImageAgent Details
+
+The `ImageAgent` (in `src/agents/image_agent.py`) analyzes the generated itinerary to fetch targeted images:
+
+```python
+class ImageAgent:
+    def fetch_images_for_itinerary(self, itinerary, context, max_images=15):
+        # 1. Extract image queries from itinerary
+        queries = self._extract_image_queries(itinerary, context, destination)
+
+        # 2. Prioritize by category (attractions > hotels > restaurants)
+        prioritized = self._prioritize_queries(queries, max_images)
+
+        # 3. Fetch hero image first
+        hero = self.image_search.search_hero_image(destination)
+
+        # 4. Fetch remaining images in parallel
+        results = self.image_search.search_multiple(prioritized, destination)
+
+        return ImageFetchResult(images=results, ...)
+```
+
+**Query Extraction Sources:**
+- Schedule items with `image_suggestion` field
+- Activity names (for landmarks)
+- Hotel names from accommodations research
+- Restaurant names from dining research
+
+**Tavily API Configuration:**
+- `max_results=5` - More candidates per query
+- `search_depth="advanced"` - More thorough search
+- `include_images=True` - Direct image URL extraction
+
 ### Debugging Image Issues
 
 If images are missing in the final output:
 
-1. **Check registry**: Look at `image_registry` keys in the presentation agent logs
-2. **Check placeholders**: See what `IMAGE_PLACEHOLDER:xxx` patterns the LLM generated
-3. **Check matching**: Look for "placeholder not matched" warnings in output
-4. **Add aliases**: The `_add_image_aliases()` method creates multiple keys for fuzzy matching
+1. **Check ImageAgent logs**: Look for "Searching images for N items in parallel..."
+2. **Check URL deduplication**: "Skipping duplicate URL" messages indicate same URL being returned
+3. **Check registry keys**: Presentation agent logs show "Image placeholders: X/Y matched"
+4. **Check unmatched**: Logs show "Unmatched placeholders: [keys]" and stripped versions
+5. **Add retry logic**: `simplify_query()` in image_utils.py creates fallback search queries

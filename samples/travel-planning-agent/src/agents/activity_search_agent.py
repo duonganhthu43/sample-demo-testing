@@ -168,7 +168,7 @@ Search for things to do, attractions, experiences, and activities."""
 
     def _call_llm(self) -> Any:
         try:
-            client = self.config.get_llm_client(label="activity_search")
+            client = self.config.get_llm_client(label="search_activities")
             return client.chat.completions.create(
                 model=self.config.llm.model,
                 messages=self.messages,
@@ -265,7 +265,7 @@ Search for things to do, attractions, experiences, and activities."""
 ## Task
 Extract all activities and attractions. Include names, categories, prices, durations, and tips."""
 
-            client = self.config.get_llm_client(label="activity_extraction")
+            client = self.config.get_llm_client(label="extract_activities")
 
             try:
                 response = client.chat.completions.create(

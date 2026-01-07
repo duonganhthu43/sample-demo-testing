@@ -9,6 +9,7 @@ import re
 
 from ..utils.config import get_config
 from ..tools.image_search import ImageSearchTool
+from ..tools.image_utils import normalize_image_key
 
 
 @dataclass
@@ -139,7 +140,6 @@ class ImageAgent:
         """
         queries = []
         seen_keys: Set[str] = set()
-
         # Extract from daily schedule
         for day in itinerary.get("days", []):
             for item in day.get("schedule", []):
@@ -149,23 +149,30 @@ class ImageAgent:
                     seen_keys.add(suggestion)
                     # Convert suggestion key to human-readable query
                     query = self._suggestion_to_query(suggestion, destination)
+                    # Detect category for better image search
+                    item_category = item.get("category", "").lower()
+                    search_category = self._map_category(item_category, suggestion)
+                    # Normalize the key for consistent matching
+                    normalized_key = self._normalize_key(suggestion) or suggestion
                     queries.append({
-                        "key": suggestion,
+                        "key": normalized_key,
                         "query": query,
-                        "priority": self._get_priority(item)
+                        "priority": self._get_priority(item),
+                        "category": search_category
                     })
 
                 # Also check activity name for landmarks
                 activity = item.get("activity", "")
-                category = item.get("category", "").lower()
-                if activity and category in ["sightseeing", "cultural", "entertainment"]:
+                item_category = item.get("category", "").lower()
+                if activity and item_category in ["sightseeing", "cultural", "entertainment"]:
                     key = self._normalize_key(activity)
                     if key and key not in seen_keys:
                         seen_keys.add(key)
                         queries.append({
                             "key": key,
                             "query": activity,
-                            "priority": 2
+                            "priority": 2,
+                            "category": "attraction"
                         })
 
         # Extract hotel images from context
@@ -186,36 +193,69 @@ class ImageAgent:
                                 queries.append({
                                     "key": key,
                                     "query": f"{name} hotel {destination}",
-                                    "priority": 3
+                                    "priority": 3,
+                                    "category": "hotel"
                                 })
 
         # Extract restaurant/food images from context
         for item in context.get("research", []):
             if isinstance(item, dict) and item.get("type") == "restaurants":
-                # Get top restaurants for images
+                # Get restaurants for images - include more to increase match chances
                 all_restaurants = []
-                all_restaurants.extend(item.get("dinner_options", [])[:3])
-                all_restaurants.extend(item.get("lunch_options", [])[:2])
+                all_restaurants.extend(item.get("dinner_options", [])[:5])
+                all_restaurants.extend(item.get("lunch_options", [])[:5])
+                all_restaurants.extend(item.get("breakfast_options", [])[:3])
 
                 for restaurant in all_restaurants:
                     if isinstance(restaurant, dict):
                         name = restaurant.get("name", "")
                         image_suggestion = restaurant.get("image_suggestion", "")
                         cuisine = restaurant.get("cuisine_type", "food")
+                        specialty = restaurant.get("specialty_dishes", [])
 
                         if name:
-                            key = image_suggestion or self._normalize_key(name)
+                            # Normalize both image_suggestion and name for consistent keys
+                            key = self._normalize_key(image_suggestion) if image_suggestion else self._normalize_key(name)
                             if key and not self._is_duplicate(key, seen_keys):
                                 seen_keys.add(key)
-                                # Search for food/dish image rather than restaurant exterior
-                                query = f"{cuisine} food {destination}" if "food" not in name.lower() else name
+                                # Build specific query with restaurant name and specialty
+                                if specialty:
+                                    dish = specialty[0] if isinstance(specialty, list) else specialty
+                                    query = f"{name} {dish}"
+                                else:
+                                    query = f"{name} {cuisine}"
                                 queries.append({
                                     "key": key,
                                     "query": query,
-                                    "priority": 4  # Lower priority than attractions
+                                    "priority": 4,  # Lower priority than attractions
+                                    "category": "restaurant"
                                 })
 
         return queries
+
+    def _map_category(self, item_category: str, suggestion: str) -> str:
+        """Map itinerary category to image search category"""
+        suggestion_lower = suggestion.lower()
+
+        # Check suggestion for food-related keywords
+        food_keywords = ['ramen', 'sushi', 'restaurant', 'cafe', 'izakaya', 'dining', 'food', 'lunch', 'dinner', 'breakfast']
+        if any(kw in suggestion_lower for kw in food_keywords):
+            return "restaurant"
+
+        # Check suggestion for hotel keywords
+        hotel_keywords = ['hotel', 'inn', 'hostel', 'resort', 'lodge', 'ryokan']
+        if any(kw in suggestion_lower for kw in hotel_keywords):
+            return "hotel"
+
+        # Map by item category
+        if item_category in ["food", "meal", "dining"]:
+            return "restaurant"
+        elif item_category in ["sightseeing", "cultural", "entertainment", "shopping"]:
+            return "attraction"
+        elif item_category == "hotel":
+            return "hotel"
+
+        return "attraction"  # Default to attraction
 
     def _is_duplicate(self, key: str, seen_keys: Set[str]) -> bool:
         """
@@ -258,11 +298,7 @@ class ImageAgent:
 
     def _normalize_key(self, name: str) -> str:
         """Normalize a name to use as an image key"""
-        # Lowercase, replace spaces with underscores, remove special chars
-        key = name.lower().strip()
-        key = re.sub(r'[^a-z0-9\s]', '', key)
-        key = re.sub(r'\s+', '_', key)
-        return key
+        return normalize_image_key(name)
 
     def _get_priority(self, schedule_item: Dict[str, Any]) -> int:
         """

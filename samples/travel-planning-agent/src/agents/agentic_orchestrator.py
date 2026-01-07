@@ -96,7 +96,7 @@ class TravelPlanningOrchestrator:
         self.tool_executor.set_context("constraints", constraints)
 
         # Get LLM client
-        llm_client = self.config.get_llm_client(label="travel_orchestrator")
+        llm_client = self.config.get_llm_client(label="travel_planner")
         llm_params = self.config.get_llm_params()
 
         # Build initial prompt as structured content array

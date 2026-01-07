@@ -166,7 +166,7 @@ Search for available hotels with prices, ratings, and locations."""
 
     def _call_llm(self) -> Any:
         try:
-            client = self.config.get_llm_client(label="hotel_search")
+            client = self.config.get_llm_client(label="search_hotels")
             return client.chat.completions.create(
                 model=self.config.llm.model,
                 messages=self.messages,
@@ -263,7 +263,7 @@ Search for available hotels with prices, ratings, and locations."""
 ## Task
 Extract all hotel options. Include names, full addresses, prices, ratings, amenities, and locations."""
 
-            client = self.config.get_llm_client(label="hotel_extraction")
+            client = self.config.get_llm_client(label="extract_hotels")
 
             try:
                 response = client.chat.completions.create(

@@ -226,7 +226,7 @@ Search for available flights, prices, and airlines. I need at least 3-5 flight o
     def _call_llm(self) -> Any:
         """Call the LLM to get next action"""
         try:
-            client = self.config.get_llm_client(label="flight_search")
+            client = self.config.get_llm_client(label="search_flights")
             response = client.chat.completions.create(
                 model=self.config.llm.model,
                 messages=self.messages,
@@ -378,7 +378,7 @@ The response schema has detailed descriptions for each field - follow those exac
 ## Task
 Extract all flight options from the search results. Include airline names, prices, durations, and stops."""
 
-            client = self.config.get_llm_client(label="flight_extraction")
+            client = self.config.get_llm_client(label="extract_flights")
 
             try:
                 response = client.chat.completions.create(

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Any, Optional
 
 from ..utils.config import get_config
-from ..tools.image_utils import create_placeholder_svg
+from ..tools.image_utils import create_placeholder_svg, normalize_image_key
 
 
 @dataclass
@@ -954,12 +954,7 @@ Venue name:"""
 
     def _normalize_placeholder_key(self, name: str) -> str:
         """Normalize a name for use as a placeholder key"""
-        import re
-        # Lowercase, replace spaces with underscores, remove special chars
-        key = name.lower().strip()
-        key = re.sub(r'[^a-z0-9\s]', '', key)
-        key = re.sub(r'\s+', '_', key)
-        return key
+        return normalize_image_key(name)
 
     def _strip_code_fences(self, text: str) -> str:
         """
@@ -980,40 +975,64 @@ Venue name:"""
     def _extract_attraction_names(self, text: str) -> List[str]:
         """
         Extract attraction/landmark names from text content.
-        Looks for proper nouns that are likely place names.
+        Works for any destination - uses generic patterns for proper nouns and landmarks.
         """
         import re
         attractions = []
 
-        # Pattern 1: Names with landmark suffixes (Temple, Shrine, Museum, etc.)
-        # e.g., "Sensoji Temple", "Meiji Shrine", "Tokyo Tower"
-        landmark_pattern = r'([A-Z][a-z]+(?:[-\s][A-Z]?[a-z]+)*)\s+(Temple|Shrine|Museum|Palace|Park|Tower|Castle|Market|Garden|Bridge|Station|Gyoen|Jingu|Imperial)'
+        # Pattern 1: Names with landmark suffixes (works globally)
+        # e.g., "Sensoji Temple", "Eiffel Tower", "British Museum", "Central Park"
+        landmark_suffixes = (
+            'Temple|Shrine|Museum|Palace|Park|Tower|Castle|Market|Garden|Bridge|'
+            'Station|Cathedral|Church|Basilica|Mosque|Synagogue|Monument|Memorial|'
+            'Square|Plaza|Beach|Lake|River|Mountain|Hill|Valley|Falls|Bay|'
+            'Gallery|Library|Theater|Theatre|Opera|Hall|Center|Centre|'
+            'District|Quarter|Street|Avenue|Boulevard|Promenade|Boardwalk|'
+            'Island|Peninsula|Pier|Harbor|Harbour|Port|Marina|'
+            'Zoo|Aquarium|Sanctuary|Reserve|Forest|Jungle|Desert|'
+            'Fort|Fortress|Citadel|Wall|Gate|Arch|Dome|Pyramid|'
+            'University|College|Academy|Institute|Observatory|Planetarium'
+        )
+        landmark_pattern = rf'([A-Z][a-z]+(?:[-\s][A-Z]?[a-z]+)*)\s+({landmark_suffixes})'
         for match in re.findall(landmark_pattern, text):
             name = f"{match[0]} {match[1]}".strip()
             if len(name) > 5:
                 attractions.append(name)
-                # Also add without suffix for flexible matching
-                attractions.append(match[0])
+                # Also add the prefix for flexible matching
+                if len(match[0]) > 3:
+                    attractions.append(match[0])
 
-        # Pattern 2: Japanese romanized names with suffixes
-        # e.g., "Senso-ji", "Meiji-jingu", "Shinjuku-gyoen"
-        japanese_pattern = r'([A-Z][a-z]+(?:-[a-z]+)?(?:\s+[A-Z][a-z]+)*)'
-        for match in re.findall(japanese_pattern, text):
-            if any(s in match.lower() for s in ['-ji', '-jingu', '-dera', '-koen', '-en', 'gyoen']):
+        # Pattern 2: Multi-word proper nouns (2-4 capitalized words)
+        # e.g., "Notre Dame", "Big Ben", "Golden Gate", "Empire State"
+        proper_noun_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b'
+        for match in re.findall(proper_noun_pattern, text):
+            # Filter out common phrases that aren't landmarks
+            skip_phrases = {'The Best', 'Must See', 'Top Ten', 'Day One', 'Day Two'}
+            if match not in skip_phrases and len(match) > 5:
                 attractions.append(match)
-                # Also add without hyphen
+
+        # Pattern 3: Names with hyphens (common in many languages)
+        # e.g., "Senso-ji", "Champs-Élysées", "Notre-Dame"
+        hyphenated_pattern = r'\b([A-Z][a-z]+(?:-[A-Za-z]+)+)\b'
+        for match in re.findall(hyphenated_pattern, text):
+            if len(match) > 4:
+                attractions.append(match)
+                # Also add without hyphen for flexible matching
+                attractions.append(match.replace('-', ' '))
                 attractions.append(match.replace('-', ''))
 
-        # Pattern 3: Well-known district/area names
-        # e.g., "Shibuya", "Shinjuku", "Asakusa", "Harajuku"
-        district_pattern = r'\b(Shibuya|Shinjuku|Asakusa|Harajuku|Ginza|Akihabara|Ueno|Roppongi|Odaiba|Ikebukuro|Omoide Yokocho|Omoide|Yokocho)\b'
-        for match in re.findall(district_pattern, text, re.IGNORECASE):
-            attractions.append(match)
-
-        # Pattern 4: Specific landmark names commonly mentioned
-        specific_pattern = r'\b(Sensoji|Senso-ji|Meiji|Tokyo Tower|Skytree|Imperial Palace|Tsukiji|Shibuya Crossing|Takeshita|Nakamise)\b'
-        for match in re.findall(specific_pattern, text, re.IGNORECASE):
-            attractions.append(match)
+        # Pattern 4: Single capitalized words that might be landmarks (>5 chars)
+        # e.g., "Colosseum", "Parthenon", "Acropolis"
+        single_word_pattern = r'\b([A-Z][a-z]{5,})\b'
+        for match in re.findall(single_word_pattern, text):
+            # Skip common non-landmark words
+            skip_words = {'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
+                         'Saturday', 'Sunday', 'January', 'February', 'March',
+                         'April', 'August', 'September', 'October', 'November',
+                         'December', 'Morning', 'Afternoon', 'Evening', 'Restaurant',
+                         'Hotel', 'Airport', 'Station', 'Street', 'Avenue'}
+            if match not in skip_words:
+                attractions.append(match)
 
         # Deduplicate while preserving order
         seen = set()
@@ -1088,6 +1107,15 @@ Venue name:"""
         unmatched_keys = []
         used_images = set()  # Track base64 images already used (by first 100 chars)
 
+        # Pre-build normalized lookup tables for faster matching
+        # Key: stripped key (no underscores/hyphens) -> Value: list of (original_key, base64)
+        stripped_to_registry = {}
+        for reg_key, base64_data in registry.items():
+            stripped = reg_key.replace('_', '').replace('-', '').lower()
+            if stripped not in stripped_to_registry:
+                stripped_to_registry[stripped] = []
+            stripped_to_registry[stripped].append((reg_key, base64_data))
+
         # Pre-compute word sets for registry keys (for faster matching)
         registry_word_sets = {}
         for reg_key in registry:
@@ -1130,20 +1158,23 @@ Venue name:"""
                 if result:
                     return result
 
-            # Strategy 3: Stripped match (remove all underscores/hyphens for comparison)
+            # Strategy 3: Stripped match using pre-built lookup table
             # e.g., "sensojitemple" should match "sensoji_temple"
-            stripped_key = normalized.replace('_', '').replace('-', '')
-            for reg_key, base64_data in registry.items():
-                stripped_reg = reg_key.replace('_', '').replace('-', '')
-                if stripped_key == stripped_reg:
+            stripped_key = normalized.replace('_', '').replace('-', '').lower()
+            if stripped_key in stripped_to_registry:
+                for reg_key, base64_data in stripped_to_registry[stripped_key]:
                     result = try_use_image(base64_data, reg_key)
                     if result:
                         return result
-                # Also check if one contains the other (for cases like "visitsensojitemple" vs "sensoji_temple")
-                if stripped_key in stripped_reg or stripped_reg in stripped_key:
-                    result = try_use_image(base64_data, reg_key)
-                    if result:
-                        return result
+
+            # Strategy 3b: Contains match (for cases like "visitsensojitemple" vs "sensoji_temple")
+            for stripped_reg, entries in stripped_to_registry.items():
+                if len(stripped_key) > 5 and len(stripped_reg) > 5:
+                    if stripped_key in stripped_reg or stripped_reg in stripped_key:
+                        for reg_key, base64_data in entries:
+                            result = try_use_image(base64_data, reg_key)
+                            if result:
+                                return result
 
             # Strategy 4: Partial match (key contains registry key or vice versa)
             for reg_key, base64_data in registry.items():
@@ -1192,18 +1223,21 @@ Venue name:"""
                             if result:
                                 return result
 
-            # Strategy 7: Category-based fallback (DISABLED to prevent duplicate images)
-            # Category fallbacks often lead to many activities showing the same image
-            # If key looks like a hotel/restaurant/activity, use a related image
-            # category = self._detect_category(raw_key)
-            # if category and category in fallback_images:
-            #     result = try_use_image(fallback_images[category], f"fallback_{category}")
-            #     if result:
-            #         return result
+            # Strategy 7: Category-based fallback
+            # When specific image is unavailable, use any available image from same category
+            # This is better than showing a placeholder SVG
+            category = self._detect_category(raw_key)
+            if category and category in fallback_images:
+                img_hash = get_image_hash(fallback_images[category])
+                # Only use if this specific fallback hasn't been used as a primary match
+                # (allow reuse for fallbacks to avoid too many placeholders)
+                if img_hash not in used_images or len(unmatched_keys) > 5:
+                    matched_count += 1
+                    return fallback_images[category]
 
             # No match found - create a placeholder SVG
             unmatched_keys.append(raw_key)
-            label = raw_key.replace('_', ' ').title()
+            label = self._humanize_key(raw_key)
             return create_placeholder_svg(label, width=400, height=250)
 
         # First, fix any cases where LLM added data URI prefix before placeholder
@@ -1219,11 +1253,15 @@ Venue name:"""
         result = re.sub(pattern, replace_match, markdown)
 
         # Debug logging
-        if matched_count > 0:
-            print(f"  Replaced {matched_count} image placeholders with actual images")
+        total_placeholders = matched_count + len(unmatched_keys)
+        print(f"  Image placeholders: {matched_count}/{total_placeholders} matched")
         if unmatched_keys:
-            print(f"  Warning: {len(unmatched_keys)} placeholders not matched: {unmatched_keys[:5]}")
-            print(f"  Available registry keys (sample): {list(registry.keys())[:10]}")
+            print(f"  Unmatched placeholders: {unmatched_keys[:5]}{'...' if len(unmatched_keys) > 5 else ''}")
+            # Show stripped versions for debugging
+            stripped_samples = [k.replace('_', '').replace('-', '').lower() for k in unmatched_keys[:3]]
+            available_stripped = list(stripped_to_registry.keys())[:8]
+            print(f"  Stripped unmatched: {stripped_samples}")
+            print(f"  Stripped registry: {available_stripped}")
 
         return result
 
@@ -1265,6 +1303,44 @@ Venue name:"""
                     fallbacks[category] = registry['hero']
 
         return fallbacks
+
+    def _humanize_key(self, key: str) -> str:
+        """
+        Convert a run-together or underscore-separated key into readable text.
+
+        Examples:
+            "sensojitemple" -> "Sensoji Temple"
+            "sensoji_temple" -> "Sensoji Temple"
+            "tokyotower" -> "Tokyo Tower"
+            "ichiran_ramen" -> "Ichiran Ramen"
+        """
+        # First, replace underscores with spaces
+        label = key.replace('_', ' ')
+
+        # If still no spaces, try to detect word boundaries
+        if ' ' not in label:
+            # Common landmark/venue suffixes to detect word boundaries
+            suffixes = [
+                'temple', 'shrine', 'museum', 'palace', 'park', 'tower',
+                'castle', 'market', 'garden', 'bridge', 'station', 'district',
+                'crossing', 'street', 'ramen', 'sushi', 'restaurant', 'cafe',
+                'hotel', 'inn', 'hostel', 'resort', 'gyoen', 'jingu', 'dori',
+                'gai', 'cho', 'ku', 'shi', 'square', 'plaza', 'center', 'centre'
+            ]
+
+            # Try to insert space before common suffixes
+            label_lower = label.lower()
+            for suffix in suffixes:
+                if label_lower.endswith(suffix) and len(label_lower) > len(suffix):
+                    prefix_end = len(label) - len(suffix)
+                    prefix = label[:prefix_end]
+                    suffix_part = label[prefix_end:]
+                    # Only split if prefix is substantial
+                    if len(prefix) >= 3:
+                        label = f"{prefix} {suffix_part}"
+                        break
+
+        return label.title()
 
     def _detect_category(self, key: str) -> Optional[str]:
         """Detect the category of a placeholder key"""
